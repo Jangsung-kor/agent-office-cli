@@ -8,8 +8,13 @@ dist-ssr/
 
 # Local runtime & state files
 office_state.json
+office_state.*.json
 office_mapping.json
+office_mapping.*.json
+office_sessions_meta.json
+office_sessions_meta.*.json
 office_config.json
+HANDOVER.draft.md
 handovers/
 *.log
 

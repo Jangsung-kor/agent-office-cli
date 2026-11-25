@@ -1,63 +1,9 @@
 <template>
   <section class="prompt-console">
-    <!-- B안 계승 원터치 CLI 커맨드 컨트롤러 바 -->
-    <div class="quick-cmd-bar">
-      <div class="quick-cmd-left">
-        <span class="bar-label">QUICK CMD</span>
-        <button
-          type="button"
-          class="quick-btn"
-          :disabled="isBusy"
-          title="대상 작업 경로의 git 상태 및 최근 변경 파일 분석 요청 (plan 모드)"
-          @click="runQuickAnalyze"
-        >
-          변경사항 분석
-        </button>
-        <button
-          type="button"
-          :class="['quick-btn', { 'is-warn': needsHandoverWarn }]"
-          :disabled="!consoleData.agent.convId || consoleData.handoverLoading"
-          title="표준 양식(SESSION_HANDOVER_TEMPLATE) 인수인계서 생성"
-          @click="emitAction('GENERATE_HANDOVER', { agentId: consoleData.agent.id, convId: consoleData.agent.convId })"
-        >
-          {{ consoleData.handoverLoading ? '정리 중...' : '세션 정리' }}
-        </button>
-        <button
-          type="button"
-          class="quick-btn"
-          :disabled="isBusy"
-          title="agy models 목록 새로고침"
-          @click="emitAction('REFRESH_MODELS')"
-        >
-          모델 갱신
-        </button>
-      </div>
-
-      <label v-if="consoleData.agent.convId" class="new-session-toggle">
-        <input
-          type="checkbox"
-          :checked="consoleData.promptPrefs.createNewSession"
-          :disabled="isBusy"
-          @change="onPrefChange('createNewSession', $event.target.checked)"
-        />
-        <span>새 세션으로 실행</span>
-      </label>
-    </div>
-
-    <!-- CLI 플래그 제어 (--model, --effort, --mode) -->
+    <!-- 1줄 슬림 CLI 옵션 바 (--model, --effort, --mode) -->
     <div :class="['options-row', { 'two-cols': selectedModelHasBuiltInEffort }]">
-      <div class="option-field field-model">
-        <div class="field-label-row">
-          <span class="field-label">AI 모델 (--model)</span>
-          <button
-            type="button"
-            class="guide-btn"
-            title="AI 모델별 성능 및 토큰 사용량 안내"
-            @click="emitAction('OPEN_MODEL_GUIDE')"
-          >
-            ?
-          </button>
-        </div>
+      <div class="option-item field-model">
+        <span class="field-label">모델</span>
         <select
           class="option-select"
           :value="selectedModelId"
@@ -68,36 +14,41 @@
             {{ m.label }}
           </option>
         </select>
+        <button
+          type="button"
+          class="guide-btn"
+          title="AI 모델 안내 및 목록 새로고침"
+          @click="emitAction('OPEN_MODEL_GUIDE')"
+        >
+          ?
+        </button>
       </div>
 
-      <div v-if="!selectedModelHasBuiltInEffort" class="option-field">
-        <span class="field-label">추론 강도 (--effort)</span>
+      <div v-if="!selectedModelHasBuiltInEffort" class="option-item">
+        <span class="field-label">강도</span>
         <select
           class="option-select"
-          :value="consoleData.promptPrefs.effort"
+          :value="selectedEffortId"
           :disabled="isBusy"
           @change="onPrefChange('effort', $event.target.value)"
         >
-          <option value="auto">auto (모델 기본)</option>
-          <option value="low">low (최소)</option>
-          <option value="medium">medium (보통)</option>
-          <option value="high">high (권장)</option>
-          <option value="xhigh">xhigh (최대)</option>
-          <option value="max">max (최상한)</option>
+          <option v-for="eff in effortOptions" :key="eff.id" :value="eff.id">
+            {{ eff.label }}
+          </option>
         </select>
       </div>
 
-      <div class="option-field">
-        <span class="field-label">실행 모드 (--mode)</span>
+      <div class="option-item">
+        <span class="field-label">모드</span>
         <select
           class="option-select"
-          :value="consoleData.promptPrefs.mode"
+          :value="selectedModeId"
           :disabled="isBusy"
           @change="onPrefChange('mode', $event.target.value)"
         >
-          <option value="plan">plan (읽기/계획)</option>
-          <option value="accept-edits">accept-edits (편집 허용)</option>
-          <option value="auto">auto (자동 실행)</option>
+          <option v-for="md in modeOptions" :key="md.id" :value="md.id">
+            {{ md.label }}
+          </option>
         </select>
       </div>
     </div>
@@ -118,19 +69,28 @@
           <span v-else class="hint-text">
             대상: {{ consoleData.agent.id }}
             <template v-if="consoleData.agent.convId && !consoleData.promptPrefs.createNewSession">
-              (이어하기 {{ consoleData.agent.convId.slice(0, 8) }})
+              ({{ consoleData.agent.convId.slice(0, 8) }})
             </template>
             <template v-else> (새 CLI 세션)</template>
-            · Enter: 줄바꿈 / Ctrl+Enter: 전달
+            · Ctrl+Enter 전달
           </span>
         </div>
 
         <div class="action-buttons">
+          <label v-if="consoleData.agent.convId" class="new-session-toggle">
+            <input
+              type="checkbox"
+              :checked="consoleData.promptPrefs.createNewSession"
+              :disabled="isBusy"
+              @change="onPrefChange('createNewSession', $event.target.checked)"
+            />
+            <span>새 세션</span>
+          </label>
           <button
             v-if="isBusy"
             type="button"
             class="btn btn-danger"
-            @click="emitAction('STOP_PROMPT', { agentId: consoleData.agent.id })"
+            @click="emitAction('STOP_PROMPT', { agentId: consoleData.agent.id, convId: consoleData.agent.convId || null })"
           >
             실행 중단
           </button>
@@ -151,7 +111,6 @@
 
 <script setup>
 import { ref, computed } from 'vue';
-import { getHealthMeta } from '@/constants/officeLayout';
 
 const props = defineProps({
   consoleData: {
@@ -164,6 +123,21 @@ const emit = defineEmits(['action']);
 
 const promptDraft = ref('');
 
+const DEFAULT_EFFORTS = [
+  { id: 'auto', label: 'auto (기본)' },
+  { id: 'low', label: 'low (최소)' },
+  { id: 'medium', label: 'medium (보통)' },
+  { id: 'high', label: 'high (권장)' },
+  { id: 'xhigh', label: 'xhigh (최대)' },
+  { id: 'max', label: 'max (최상한)' }
+];
+
+const DEFAULT_MODES = [
+  { id: 'plan', label: 'plan (읽기/계획)' },
+  { id: 'accept-edits', label: 'accept-edits (편집 허용)' },
+  { id: 'auto', label: 'auto (자동 실행)' }
+];
+
 const FALLBACK_MODELS = [
   { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
   { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
@@ -171,6 +145,20 @@ const FALLBACK_MODELS = [
   { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
   { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' }
 ];
+
+const capabilities = computed(() => props.consoleData.capabilities || {});
+
+const effortOptions = computed(() =>
+  Array.isArray(capabilities.value.efforts) && capabilities.value.efforts.length > 0
+    ? capabilities.value.efforts
+    : DEFAULT_EFFORTS
+);
+
+const modeOptions = computed(() =>
+  Array.isArray(capabilities.value.modes) && capabilities.value.modes.length > 0
+    ? capabilities.value.modes
+    : DEFAULT_MODES
+);
 
 const modelOptions = computed(() =>
   Array.isArray(props.consoleData.models) && props.consoleData.models.length > 0
@@ -181,12 +169,36 @@ const modelOptions = computed(() =>
 const selectedModelId = computed(() => {
   const pref = props.consoleData.promptPrefs.modelId;
   if (modelOptions.value.some(m => m.id === pref)) return pref;
+  const def = capabilities.value.defaultModelId;
+  if (def && modelOptions.value.some(m => m.id === def)) return def;
   return modelOptions.value[0] ? modelOptions.value[0].id : 'gemini-4-hydrogen-high';
 });
 
-const selectedModelHasBuiltInEffort = computed(() =>
-  /-(low|medium|high|xhigh|max)$/i.test(selectedModelId.value || '')
-);
+const selectedEffortId = computed(() => {
+  const pref = props.consoleData.promptPrefs.effort;
+  if (effortOptions.value.some(e => e.id === pref)) return pref;
+  const def = capabilities.value.defaultEffort;
+  if (def && effortOptions.value.some(e => e.id === def)) return def;
+  return effortOptions.value[0] ? effortOptions.value[0].id : 'auto';
+});
+
+const selectedModeId = computed(() => {
+  const pref = props.consoleData.promptPrefs.mode;
+  if (modeOptions.value.some(m => m.id === pref)) return pref;
+  const def = capabilities.value.defaultMode;
+  if (def && modeOptions.value.some(m => m.id === def)) return def;
+  return modeOptions.value[0] ? modeOptions.value[0].id : 'plan';
+});
+
+const selectedModelHasBuiltInEffort = computed(() => {
+  const pattern = capabilities.value.builtInEffortRegex;
+  if (!pattern) return false;
+  try {
+    return new RegExp(pattern, 'i').test(selectedModelId.value || '');
+  } catch (_) {
+    return false;
+  }
+});
 
 const isBusy = computed(() => {
   const a = props.consoleData.agent;
@@ -196,11 +208,6 @@ const isBusy = computed(() => {
     || a.state === 'WORKING'
     || a.state === 'PLANNING'
   );
-});
-
-const needsHandoverWarn = computed(() => {
-  const hm = getHealthMeta(props.consoleData.agent.fileSizeMB, Boolean(props.consoleData.agent.convId));
-  return hm.level === 'warn' || hm.level === 'danger';
 });
 
 const textareaPlaceholder = computed(() => {
@@ -232,26 +239,12 @@ function submitPrompt() {
     agentId: props.consoleData.agent.id,
     convId: prefs.createNewSession ? '' : (props.consoleData.agent.convId || ''),
     modelId: selectedModelId.value,
-    effort: selectedModelHasBuiltInEffort.value ? 'auto' : (prefs.effort || 'auto'),
-    mode: prefs.mode || 'plan',
+    effort: selectedModelHasBuiltInEffort.value ? 'auto' : selectedEffortId.value,
+    mode: selectedModeId.value,
     prompt: clean,
     createNew: Boolean(prefs.createNewSession)
   });
   promptDraft.value = '';
-}
-
-function runQuickAnalyze() {
-  if (isBusy.value) return;
-  const prefs = props.consoleData.promptPrefs;
-  emitAction('SEND_PROMPT', {
-    agentId: props.consoleData.agent.id,
-    convId: prefs.createNewSession ? '' : (props.consoleData.agent.convId || ''),
-    modelId: selectedModelId.value,
-    effort: 'medium',
-    mode: 'plan',
-    prompt: '현재 작업 디렉터리의 git status와 최근 변경된 핵심 파일 구조를 간결하게 요약해줘.',
-    createNew: Boolean(prefs.createNewSession)
-  });
 }
 
 function onTextareaKeydown(ev) {
@@ -267,107 +260,46 @@ function onTextareaKeydown(ev) {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 10px 12px;
   background-color: $bg-surface;
   overflow: auto;
 }
 
-.quick-cmd-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.options-row {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr;
   gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+
+  &.two-cols {
+    grid-template-columns: 1.6fr 1fr;
+  }
 }
 
-.quick-cmd-left {
+.option-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-}
-
-.bar-label {
-  font-family: $font-mono;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: $term-blue;
-  margin-right: 2px;
-}
-
-.quick-btn {
-  padding: 4px 9px;
-  background-color: $bg-elevated;
-  border: 1px solid $border-strong;
-  border-radius: 4px;
-  color: $text-secondary;
-  font-family: $font-mono;
-  font-size: 11px;
-  cursor: pointer;
-
-  &:hover:not(:disabled) {
-    background-color: $bg-hover;
-    color: $text-primary;
-  }
-
-  &.is-warn:not(:disabled) {
-    border-color: $term-warn;
-    color: $term-yellow;
-  }
-
-  &:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-}
-
-.new-session-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: $text-secondary;
-  cursor: pointer;
-}
-
-.options-row {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr;
-  gap: 8px;
-
-  &.two-cols {
-    grid-template-columns: 1.5fr 1fr;
-  }
-}
-
-.option-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   min-width: 0;
-}
-
-.field-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .field-label {
   font-size: 11px;
   color: $text-secondary;
+  flex-shrink: 0;
 }
 
 .guide-btn {
-  width: 17px;
-  height: 17px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
   border-radius: 50%;
   border: 1px solid $border-strong;
   background-color: $bg-input;
   color: $text-secondary;
   font-family: $font-mono;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
 
@@ -378,12 +310,13 @@ function onTextareaKeydown(ev) {
 }
 
 .option-select {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background-color: $bg-input;
   border: 1px solid $border-subtle;
   border-radius: 4px;
   color: $text-primary;
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-family: $font-mono;
   font-size: 11.5px;
   outline: none;
@@ -400,22 +333,22 @@ function onTextareaKeydown(ev) {
 
 .input-wrap {
   flex: 1;
-  min-height: 68px;
+  min-height: 92px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
 }
 
 .prompt-textarea {
   flex: 1;
-  min-height: 50px;
+  min-height: 64px;
   width: 100%;
   resize: none;
   background-color: $bg-input;
   border: 1px solid $border-strong;
   border-radius: 4px;
   color: $text-primary;
-  padding: 7px 10px;
+  padding: 8px 10px;
   font-family: $font-sans;
   font-size: 12.5px;
   line-height: 1.5;
@@ -466,8 +399,17 @@ function onTextareaKeydown(ev) {
 .action-buttons {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
+}
+
+.new-session-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: $text-secondary;
+  cursor: pointer;
 }
 
 .btn {

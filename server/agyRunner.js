@@ -195,11 +195,13 @@ function startAgyPromptJob({
 
   let outBuf = '';
   child.stdout.on('data', chunk => {
+    if (job.aborted) return;
     outBuf += chunk.toString('utf8');
     const lines = outBuf.split(/\r?\n/);
     outBuf = lines.pop() || '';
 
     for (let i = 0; i < lines.length; i++) {
+      if (job.aborted) return;
       const line = lines[i].trim();
       if (!line) continue;
       appendRawLine(line);
@@ -319,6 +321,7 @@ function startAgyPromptJob({
   });
 
   child.stderr.on('data', chunk => {
+    if (job.aborted) return;
     const errText = chunk.toString('utf8').trim();
     if (errText) {
       const tagged = `[stderr] ${errText}`;
@@ -339,6 +342,10 @@ function startAgyPromptJob({
   });
 
   const finalizeJob = (code, errMsg) => {
+    if (job.aborted) {
+      runningJobs.delete(agentId);
+      return;
+    }
     if (errMsg) {
       appendLog(`[실행 실패] ${errMsg}`, 'warn');
     } else {
@@ -385,9 +392,11 @@ function startAgyPromptJob({
  * @param {Function} onStreamEvent
  * @return {Boolean}
  */
-function stopAgyJob(agentId, runningJobs, finishedJobs, onStreamEvent) {
+function stopAgyJob(agentId, runningJobs, finishedJobs, onStreamEvent, opts = {}) {
   if (!agentId) return false;
   const job = runningJobs.get(agentId);
+  const fallbackConvId = opts && typeof opts.convId === 'string' && opts.convId.trim() ? opts.convId.trim() : null;
+  const abortedSessions = opts && opts.abortedSessions instanceof Map ? opts.abortedSessions : null;
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const timeStr = new Date(nowMs).toTimeString().slice(0, 8);
@@ -398,21 +407,31 @@ function stopAgyJob(agentId, runningJobs, finishedJobs, onStreamEvent) {
     job.exitCode = -1;
     job.endedAtMs = nowMs;
     job.endedAt = nowIso;
+    if (!job.convId && fallbackConvId) {
+      job.convId = fallbackConvId;
+    }
     job.error = '사용자 요청으로 실행이 중단되었습니다.';
     job.logs.push({ time: timeStr, message: '[CLI 중단] 사용자 요청으로 실행을 중단했습니다.', level: 'warn' });
     if (job.logs.length > 40) job.logs.shift();
 
     try {
       if (process.platform === 'win32' && job.pid) {
-        execFile('taskkill', ['/PID', String(job.pid), '/T', '/F'], { windowsHide: true }, () => {});
+        execFile('taskkill', ['/PID', String(job.pid), '/T', '/F'], { windowsHide: true }, err => {
+          if (err && job.child && !job.child.killed) {
+            try { job.child.kill('SIGKILL'); } catch (_) {}
+          }
+        });
       } else if (job.child) {
-        job.child.kill('SIGTERM');
+        job.child.kill('SIGKILL');
       }
     } catch (_) {}
 
     runningJobs.delete(agentId);
     if (finishedJobs) {
       finishedJobs.set(agentId, job);
+    }
+    if (abortedSessions && job.convId) {
+      abortedSessions.set(job.convId, job);
     }
     if (onStreamEvent) {
       onStreamEvent('chat_result', {
@@ -430,19 +449,23 @@ function stopAgyJob(agentId, runningJobs, finishedJobs, onStreamEvent) {
   }
 
   // 실행 중 프로세스가 이미 종료되었더라도 transcript.jsonl의 RUNNING 잔재 상태를 해제할 수 있도록 중단 마커 기록
+  const markerJob = {
+    agentId,
+    convId: fallbackConvId,
+    modelId: '-',
+    mode: '-',
+    prompt: '사용자 요청으로 실행 중단됨',
+    aborted: true,
+    exitCode: -1,
+    endedAtMs: nowMs,
+    endedAt: nowIso,
+    logs: [{ time: timeStr, message: '[상태 해제] 사용자 요청으로 실행 대기 상태를 해제했습니다.', level: 'warn' }]
+  };
   if (finishedJobs) {
-    finishedJobs.set(agentId, {
-      agentId,
-      convId: null,
-      modelId: '-',
-      mode: '-',
-      prompt: '사용자 요청으로 실행 중단됨',
-      aborted: true,
-      exitCode: -1,
-      endedAtMs: nowMs,
-      endedAt: nowIso,
-      logs: [{ time: timeStr, message: '[상태 해제] 사용자 요청으로 실행 대기 상태를 해제했습니다.', level: 'warn' }]
-    });
+    finishedJobs.set(agentId, markerJob);
+  }
+  if (abortedSessions && fallbackConvId) {
+    abortedSessions.set(fallbackConvId, markerJob);
   }
   return true;
 }

@@ -7,7 +7,7 @@
 ## 1. 프로젝트 개요 및 경계
 
 - **저장소 루트**: `e:\github\agent-office-cli\` (독립 개인 Git 저장소)
-- **제어 대상 작업 경로 (`TARGET_WORKSPACE`)**: 환경 변수 또는 설정으로 지정 (기본값 `e:\github\dcim`, 필요 시 UI/설정 파일에서 임의 프로젝트 전환 가능)
+- **제어 대상 작업 경로 (`TARGET_WORKSPACE`)**: 환경 변수 또는 설정으로 지정 (기본값 현재 실행 디렉터리 `process.cwd()`, 필요 시 UI/설정 파일에서 임의 프로젝트 전환 가능)
 - **핵심 목표**:
   1. Antigravity CLI(`agy.exe`)의 빠른 실행 속도와 단일 저장소(`~/.gemini/antigravity-cli/`) 특성을 활용한 **CLI 전용 AI 에이전트 관제 및 대화 UI** 구축
   2. 기존 단일 HTML 프로토타입에 부재했던 **에이전트 답변 및 실시간 응답 스트림(`stream-json`) 뷰어** 구현

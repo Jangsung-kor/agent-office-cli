@@ -56,6 +56,25 @@
       </div>
     </div>
 
+    <!-- 현재 세션 토큰 사용량 요약 바 -->
+    <div v-if="panelData.agent.convId && sessionTokenStats" class="session-token-bar">
+      <div class="token-stats-group mono">
+        <span class="token-badge is-total">누적 {{ formatTokens(sessionTokenStats.totalTokens) }}</span>
+        <span class="token-item">입력 {{ formatTokens(sessionTokenStats.inputTokens) }}</span>
+        <span class="token-item c-green">
+          캐시 {{ formatTokens(sessionTokenStats.cacheReadTokens) }} ({{ sessionCacheHitPct }}%)
+        </span>
+        <span class="token-item c-blue">출력 {{ formatTokens(sessionTokenStats.outputTokens) }}</span>
+        <span v-if="sessionTokenStats.lastContextTokens > 0" class="token-item">
+          컨텍스트 {{ formatTokens(sessionTokenStats.lastContextTokens) }}<template v-if="sessionTokenStats.contextWindow"> / {{ formatTokens(sessionTokenStats.contextWindow) }}</template>
+        </span>
+        <span v-if="sessionPeriodLabel" class="token-item">기간 {{ sessionPeriodLabel }}</span>
+      </div>
+      <button type="button" class="token-detail-btn" @click="emitAction('OPEN_TOKEN_MODAL')">
+        전체 토큰 보기
+      </button>
+    </div>
+
     <!-- [탭 1] 대화 및 실시간 답변 스레드 (터미널 + 구조화 박스) -->
     <div
       v-show="activeTab === 'chat'"
@@ -67,7 +86,7 @@
     >
       <div class="boot-line">
         <span class="prompt-prefix">❯</span>
-        <span class="cmd-echo">agy attach --agent {{ panelData.agent.id }}</span>
+        <span class="cmd-echo">{{ panelData.cliCommand || 'agy' }} attach --agent {{ panelData.agent.id }}</span>
       </div>
       <div class="boot-meta">
         [DIR] workspace={{ panelData.targetWorkspace || '-' }} | tool={{ panelData.agent.currentTool || '-' }}
@@ -132,6 +151,10 @@
                 {{ msg.isError ? '[ERROR]' : '[RESPONSE]' }}
               </span>
               <span v-if="msg.timestamp" class="turn-time">{{ formatClock(msg.timestamp) }}</span>
+              <span v-if="msg.usage" class="msg-token-chip mono">
+                <template v-if="msg.usage.model">{{ msg.usage.model }} · </template>
+                입력 {{ formatTokens(msg.usage.inputTokens) }} · 캐시 {{ formatTokens(msg.usage.cacheReadTokens) }} · 출력 {{ formatTokens(msg.usage.outputTokens) }} (합 {{ formatTokens(msg.usage.totalTokens) }})
+              </span>
             </div>
             <!-- eslint-disable-next-line vue/no-v-html -->
             <div class="markdown-body" v-html="renderMarkdownCached(msg.id, msg.content)"></div>
@@ -144,7 +167,7 @@
         <div class="user-turn">
           <div class="turn-head">
             <span class="prompt-prefix">❯</span>
-            <span class="cmd-echo">{{ panelData.activeStream.commandLine || 'agy --output-format stream-json' }}</span>
+            <span class="cmd-echo">{{ panelData.activeStream.commandLine || `${panelData.cliCommand || 'agy'} stream` }}</span>
           </div>
           <div v-if="panelData.activeStream.prompt" class="user-prompt-box">
             {{ panelData.activeStream.prompt }}
@@ -207,8 +230,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, nextTick } from 'vue';
+import { ref, reactive, computed, watch, nextTick } from 'vue';
 import { renderMarkdown } from '@/utils/markdown';
+import { formatTokens, toLocalDateKey, formatPeriodRange } from '@/utils/formatters';
 
 const props = defineProps({
   panelData: {
@@ -259,10 +283,41 @@ function emitAction(type, payload) {
   emit('action', { type, payload });
 }
 
+const sessionTokenStats = computed(() => {
+  const u = props.panelData.sessionUsage || props.panelData.agent.tokenUsage || null;
+  if (!u || !u.totalTokens) return null;
+  return u;
+});
+
+const sessionCacheHitPct = computed(() => {
+  const u = sessionTokenStats.value;
+  if (!u) return 0;
+  const denom = (Number(u.inputTokens) || 0) + (Number(u.cacheReadTokens) || 0);
+  if (denom <= 0) return 0;
+  return Math.round(((Number(u.cacheReadTokens) || 0) / denom) * 100);
+});
+
+const sessionPeriodLabel = computed(() => {
+  const u = sessionTokenStats.value;
+  const startIso = (u && u.startedAtIso) || props.panelData.agent.startedAtIso || '';
+  const endIso = (u && u.lastActiveIso) || props.panelData.agent.lastActiveIso || '';
+  const durationMs = (u && u.durationMs) || props.panelData.agent.durationMs || 0;
+  if (!startIso && !endIso) return '';
+  return formatPeriodRange(startIso, endIso, durationMs);
+});
+
 function formatClock(iso) {
   if (!iso) return '';
   try {
-    return new Date(iso).toTimeString().slice(0, 8);
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const time = d.toTimeString().slice(0, 8);
+    const todayKey = toLocalDateKey(Date.now());
+    const dateKey = toLocalDateKey(d.getTime());
+    if (dateKey && dateKey !== todayKey) {
+      return `${dateKey.slice(5).replace('-', '/')} ${time}`;
+    }
+    return time;
   } catch (_) {
     return '';
   }
@@ -644,9 +699,64 @@ watch(
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 6px;
   font-family: $font-mono;
   font-size: 11px;
+}
+
+.session-token-bar {
+  padding: 5px 12px;
+  background-color: $bg-surface;
+  border-bottom: 1px solid $border-subtle;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.token-stats-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: $text-secondary;
+}
+
+.token-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background-color: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: $term-blue;
+  font-weight: 700;
+}
+
+.token-detail-btn {
+  padding: 2px 7px;
+  background-color: $bg-elevated;
+  border: 1px solid $border-strong;
+  border-radius: 3px;
+  color: $text-secondary;
+  font-size: 10.5px;
+  cursor: pointer;
+
+  &:hover {
+    color: $text-primary;
+    background-color: $bg-hover;
+  }
+}
+
+.msg-token-chip {
+  margin-left: auto;
+  padding: 1px 6px;
+  background-color: $bg-input;
+  border: 1px solid $border-subtle;
+  border-radius: 3px;
+  font-size: 10px;
+  color: $text-muted;
 }
 
 .tag-done {

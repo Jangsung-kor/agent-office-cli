@@ -25,6 +25,15 @@
         <button type="button" class="btn btn-primary" @click="copyText(handover.bootstrapPrompt, '새 세션 프롬프트')">
           새 세션 프롬프트 복사
         </button>
+        <button
+          v-if="handover.convId"
+          type="button"
+          class="btn"
+          title="정리가 끝난 이 세션을 보관(숨김) 상태로 전환"
+          @click="archiveHandoverSession"
+        >
+          이 세션 보관(정리 완료)
+        </button>
         <button type="button" class="btn" @click="closeModal">닫기</button>
       </footer>
     </div>
@@ -34,7 +43,7 @@
 <script setup>
 import { ref } from 'vue';
 
-defineProps({
+const props = defineProps({
   visible: {
     type: Boolean,
     default: false
@@ -51,6 +60,15 @@ const copyFeedback = ref('');
 function closeModal() {
   copyFeedback.value = '';
   emit('action', { type: 'CLOSE_MODAL' });
+}
+
+function archiveHandoverSession() {
+  if (!props.handover || !props.handover.convId) return;
+  emit('action', {
+    type: 'UPDATE_SESSION_META',
+    payload: { convId: props.handover.convId, archived: true }
+  });
+  copyFeedback.value = '이 세션을 정리됨(보관) 상태로 전환했습니다.';
 }
 
 async function copyText(text, label) {

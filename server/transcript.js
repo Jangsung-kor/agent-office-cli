@@ -8,6 +8,173 @@ const TAIL_BYTES = 256 * 1024;
 const FALLBACK_USER_SCAN_BYTES = 1024 * 1024;
 const HANDOVER_SCAN_BYTES = 2 * 1024 * 1024;
 const FULL_TRANSCRIPT_SCAN_BYTES = 2 * 1024 * 1024;
+const TOKEN_FULL_SCAN_LIMIT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * ISO 문자열 또는 ms 타임스탬프를 로컬 YYYY-MM-DD 날짜 키로 변환
+ * @author Jangsung
+ * @param {String|Number} ts
+ * @return {String}
+ */
+function localDateKey(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const ms = d.getTime();
+  if (!Number.isFinite(ms)) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 날짜별 토큰 누적 버킷 업데이트
+ * @author Jangsung
+ * @param {Object} byDate
+ * @param {String} dateKey
+ * @param {Object} delta
+ */
+function accumulateDailyTokens(byDate, dateKey, delta) {
+  if (!byDate || !dateKey || !delta) return;
+  const cur = byDate[dateKey] || {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0
+  };
+  cur.inputTokens += Number(delta.inputTokens) || 0;
+  cur.cacheReadTokens += Number(delta.cacheReadTokens) || 0;
+  cur.outputTokens += Number(delta.outputTokens) || 0;
+  cur.reasoningTokens += Number(delta.reasoningTokens) || 0;
+  cur.totalTokens += Number(delta.totalTokens) || 0;
+  byDate[dateKey] = cur;
+}
+
+/**
+ * 정규화된 토큰 사용량 빈 객체 생성
+ * @author Jangsung
+ * @return {Object}
+ */
+function createEmptyTokenUsage() {
+  return {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    lastContextTokens: 0,
+    contextWindow: null,
+    model: null,
+    startedAtIso: null,
+    lastActiveIso: null,
+    durationMs: 0,
+    byDate: {},
+    partial: false
+  };
+}
+
+/**
+ * Antigravity transcript.jsonl 스텝 목록에서 step_index 중복 제거 후 누적 토큰 및 기간 집계
+ * @author Jangsung
+ * @param {Array<Object>} items
+ * @param {Boolean} partial
+ * @param {Number|null} fallbackLastMs
+ * @return {Object}
+ */
+function summarizeAntigravityTokens(items, partial = false, fallbackLastMs = null) {
+  const usage = createEmptyTokenUsage();
+  usage.partial = Boolean(partial);
+  if (!Array.isArray(items) || items.length === 0) return usage;
+
+  const stepMap = new Map();
+  let seq = 0;
+  let minMs = Infinity;
+  let maxMs = 0;
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (!item) continue;
+    if (item.created_at) {
+      const ms = new Date(item.created_at).getTime();
+      if (Number.isFinite(ms)) {
+        if (ms < minMs) minMs = ms;
+        if (ms > maxMs) maxMs = ms;
+      }
+    }
+    if (item.type !== 'PLANNER_RESPONSE') continue;
+    const key = typeof item.step_index === 'number' ? `s:${item.step_index}` : `q:${seq++}`;
+    stepMap.set(key, item);
+  }
+
+  for (const step of stepMap.values()) {
+    const inp = Number(step.input_tokens) || 0;
+    const cache = Number(step.cache_read_tokens) || 0;
+    const out = Number(step.output_tokens) || 0;
+    const tot = inp + cache + out;
+    if (tot > 0) {
+      usage.inputTokens += inp;
+      usage.cacheReadTokens += cache;
+      usage.outputTokens += out;
+      usage.totalTokens += tot;
+      if (inp + cache > 0) {
+        usage.lastContextTokens = inp + cache;
+      }
+      const dateKey = localDateKey(step.created_at || fallbackLastMs);
+      accumulateDailyTokens(usage.byDate, dateKey, {
+        inputTokens: inp,
+        cacheReadTokens: cache,
+        outputTokens: out,
+        reasoningTokens: 0,
+        totalTokens: tot
+      });
+    }
+    if (typeof step.model === 'string' && step.model.trim()) {
+      usage.model = step.model.trim();
+    }
+  }
+
+  if (Number.isFinite(fallbackLastMs) && fallbackLastMs > maxMs) {
+    maxMs = fallbackLastMs;
+  }
+  if (Number.isFinite(minMs) && maxMs > 0) {
+    usage.startedAtIso = new Date(minMs).toISOString();
+    usage.lastActiveIso = new Date(maxMs).toISOString();
+    usage.durationMs = Math.max(0, maxMs - minMs);
+  }
+  return usage;
+}
+
+/**
+ * Antigravity 세션 로그 파일 전체(또는 16MB 초과 시 꼬리 2MB)에서 토큰 합계 계산
+ * @author Jangsung
+ * @param {String} logPath
+ * @param {Number} fileSize
+ * @param {Number|null} mtimeMs
+ * @return {Object}
+ */
+function readAntigravityTokenSummary(logPath, fileSize, mtimeMs = null) {
+  try {
+    if (fileSize <= TOKEN_FULL_SCAN_LIMIT_BYTES) {
+      const items = parseJsonLines(fs.readFileSync(logPath, 'utf8'));
+      return summarizeAntigravityTokens(items, false, mtimeMs);
+    }
+    const scanBytes = HANDOVER_SCAN_BYTES;
+    const fd = fs.openSync(logPath, 'r');
+    try {
+      const buf = Buffer.alloc(scanBytes);
+      fs.readSync(fd, buf, 0, scanBytes, fileSize - scanBytes);
+      let str = buf.toString('utf8');
+      const nl = str.indexOf('\n');
+      if (nl !== -1) str = str.slice(nl + 1);
+      return summarizeAntigravityTokens(parseJsonLines(str), true, mtimeMs);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (_) {
+    return createEmptyTokenUsage();
+  }
+}
 
 /**
  * Antigravity CLI 전용 brain 디렉터리 경로 반환
@@ -17,6 +184,132 @@ const FULL_TRANSCRIPT_SCAN_BYTES = 2 * 1024 * 1024;
  */
 function getCliBrainDir() {
   return process.env.ANTIGRAVITY_CLI_BRAIN_DIR || path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
+}
+
+/**
+ * 파일 시스템 경로를 OS 대소문자 규칙에 맞춰 비교 키로 정규화
+ * @author Jangsung
+ * @param {String} targetPath
+ * @return {String}
+ */
+function normalizeFsPathKey(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return '';
+  try {
+    const resolved = path.resolve(targetPath);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  } catch (_) {
+    return '';
+  }
+}
+
+let historyIndexCache = { filePath: '', mtimeMs: -1, size: -1, data: null };
+
+/**
+ * ~/.gemini/antigravity-cli/history.jsonl에서 워크스페이스-세션 매핑 인덱스 조회 (mtime/size 캐시)
+ * @author Jangsung
+ * @return {Object}
+ */
+function readCliHistoryIndex() {
+  const brainDir = getCliBrainDir();
+  const historyPath = path.join(path.dirname(brainDir), 'history.jsonl');
+  const empty = { byConvId: new Map(), byWorkspace: new Map() };
+  if (!fs.existsSync(historyPath)) return empty;
+
+  let stat;
+  try {
+    stat = fs.statSync(historyPath);
+  } catch (_) {
+    return empty;
+  }
+
+  if (
+    historyIndexCache.data &&
+    historyIndexCache.filePath === historyPath &&
+    historyIndexCache.mtimeMs === stat.mtimeMs &&
+    historyIndexCache.size === stat.size
+  ) {
+    return historyIndexCache.data;
+  }
+
+  const byConvId = new Map();
+  const byWorkspace = new Map();
+
+  try {
+    const raw = fs.readFileSync(historyPath, 'utf8');
+    const lines = raw.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line[0] !== '{') continue;
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch (_) {
+        continue;
+      }
+      const convId = typeof obj.conversationId === 'string' ? obj.conversationId.trim() : '';
+      const ws = typeof obj.workspace === 'string' ? obj.workspace.trim() : '';
+      if (!convId || !ws || !/^[a-zA-Z0-9_-]{4,128}$/.test(convId)) continue;
+
+      const wsResolved = path.resolve(ws);
+      const wsKey = normalizeFsPathKey(wsResolved);
+      const ts = typeof obj.timestamp === 'number' ? obj.timestamp : 0;
+      const display = typeof obj.display === 'string'
+        ? obj.display.replace(/\s+/g, ' ').trim().slice(0, 120)
+        : '';
+
+      const prevConv = byConvId.get(convId);
+      if (!prevConv || ts >= prevConv.timestamp) {
+        byConvId.set(convId, {
+          convId,
+          workspacePath: wsResolved,
+          workspaceKey: wsKey,
+          timestamp: ts,
+          display
+        });
+      }
+
+      let wsEntry = byWorkspace.get(wsKey);
+      if (!wsEntry) {
+        wsEntry = {
+          workspacePath: wsResolved,
+          workspaceKey: wsKey,
+          convIds: [],
+          convSet: new Set(),
+          lastTimestamp: 0,
+          lastPrompt: ''
+        };
+        byWorkspace.set(wsKey, wsEntry);
+      }
+      if (!wsEntry.convSet.has(convId)) {
+        const logPath = path.join(brainDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+        if (fs.existsSync(logPath)) {
+          wsEntry.convSet.add(convId);
+          wsEntry.convIds.push({ convId, timestamp: ts });
+        }
+      } else if (ts > 0) {
+        const existing = wsEntry.convIds.find(c => c.convId === convId);
+        if (existing && ts > existing.timestamp) existing.timestamp = ts;
+      }
+      if (ts >= wsEntry.lastTimestamp) {
+        wsEntry.lastTimestamp = ts;
+        if (display && !display.startsWith('/')) {
+          wsEntry.lastPrompt = display;
+        }
+      }
+    }
+
+    for (const entry of byWorkspace.values()) {
+      entry.convIds.sort((a, b) => b.timestamp - a.timestamp);
+      entry.convIds = entry.convIds.map(c => c.convId);
+      delete entry.convSet;
+    }
+  } catch (_) {
+    return empty;
+  }
+
+  const data = { byConvId, byWorkspace };
+  historyIndexCache = { filePath: historyPath, mtimeMs: stat.mtimeMs, size: stat.size, data };
+  return data;
 }
 
 /**
@@ -150,13 +443,7 @@ function matchRoleFromText(str, activeAgents) {
   if (!str) return null;
   const list = Array.isArray(activeAgents) && activeAgents.length > 0
     ? activeAgents
-    : [
-        { id: 'Agent_BMS' },
-        { id: 'Agent_Audit' },
-        { id: 'Agent_QA' },
-        { id: 'Agent_Dev' },
-        { id: 'Master' }
-      ];
+    : [{ id: 'Master' }];
 
   // 구체적 도메인/실무 에이전트를 우선 매칭하고, Master는 마지막에 판별함
   const nonLead = list.filter(a => a && a.id && a.id.toLowerCase() !== 'master');
@@ -164,44 +451,37 @@ function matchRoleFromText(str, activeAgents) {
 
   for (const ag of nonLead) {
     const escapedId = escapeRegExp(ag.id);
-    const re = new RegExp(`(?:Personal|Rules)[\\\\/]${escapedId}|\\b${escapedId}\\b`, 'i');
+    const re = new RegExp(`(?:rules|agents|personal)[\\\\/]${escapedId}|\\b${escapedId}\\b`, 'i');
     if (re.test(str)) return ag.id;
   }
 
   for (const ag of leads) {
     const escapedId = escapeRegExp(ag.id);
-    const re = new RegExp(`(?:Personal|Rules)[\\\\/]${escapedId}|virtual_office|office_bridge|agent-office-cli|\\b${escapedId}\\b`, 'i');
+    const re = new RegExp(`(?:rules|agents|personal)[\\\\/]${escapedId}|virtual_office|office_bridge|agent-office-cli|\\b${escapedId}\\b`, 'i');
     if (re.test(str)) return ag.id;
   }
   return null;
 }
 
 /**
- * 사용자 입력 및 도구 호출 경로를 분석하여 에이전트 역할 식별
+ * 후보 에이전트 목록을 대상으로 사용자 입력 및 도구 경로에서 역할 매칭
  * @author Jangsung
- * @param {String} convId
  * @param {Array<Object>} headItems
  * @param {Array<Object>} tailItems
- * @param {Object} manualMapping
- * @param {Array<Object>} activeAgents
+ * @param {Array<Object>} candidateAgents
  * @return {String|null}
  */
-function detectAgentRole(convId, headItems, tailItems, manualMapping, activeAgents) {
-  if (manualMapping && manualMapping[convId]) {
-    const m = manualMapping[convId];
-    return m === 'NONE' ? null : m;
-  }
-
-  const activeIds = new Set(Array.isArray(activeAgents) ? activeAgents.map(a => a.id) : []);
+function matchRoleFromList(headItems, tailItems, candidateAgents) {
+  const activeIds = new Set(Array.isArray(candidateAgents) ? candidateAgents.map(a => a.id) : []);
 
   const headUsers = headItems.filter(x => x.type === 'USER_INPUT' && typeof x.content === 'string').slice(0, 3);
   for (let i = 0; i < headUsers.length; i++) {
     const c = headUsers[i].content;
-    if (activeIds.has('Master') && /가상\s*오피스|virtual\s*office|office_bridge|agent-office-cli|Personal[\\/]Master/i.test(c)) {
+    const matched = matchRoleFromText(c, candidateAgents);
+    if (matched) return matched;
+    if (activeIds.has('Master') && /가상\s*오피스|virtual\s*office|office_bridge|agent-office-cli|총괄|pm|매니저/i.test(c)) {
       return 'Master';
     }
-    const matched = matchRoleFromText(c, activeAgents);
-    if (matched) return matched;
   }
 
   const allSteps = headItems.slice(0, 25).concat(tailItems.slice(-25));
@@ -213,9 +493,9 @@ function detectAgentRole(convId, headItems, tailItems, manualMapping, activeAgen
       const tc = tCalls[j];
       const p = tc.args && tc.args.Path ? unquoteArg(tc.args.Path) : '';
       if (!p) continue;
-      if (activeIds.has('Master') && /virtual_office|office_bridge|agent-office-cli|Personal[\\/]Master/i.test(p)) return 'Master';
-      const r = matchRoleFromText(p, activeAgents);
+      const r = matchRoleFromText(p, candidateAgents);
       if (r) touchedRoles.add(r);
+      else if (activeIds.has('Master') && /virtual_office|office_bridge|agent-office-cli/i.test(p)) return 'Master';
     }
   }
 
@@ -224,11 +504,52 @@ function detectAgentRole(convId, headItems, tailItems, manualMapping, activeAgen
 
   const recentUsers = tailItems.filter(x => x.type === 'USER_INPUT' && typeof x.content === 'string');
   const userSample = headUsers.concat(recentUsers).map(x => x.content).join(' ');
-  if (activeIds.has('Agent_BMS') && /bms|배터리|셀\s*매핑|rsc_id|rsc_key|DcimBattery/i.test(userSample)) return 'Agent_BMS';
-  if (activeIds.has('Agent_Audit') && /감사\s*로그|편집\s*이력|EditHistory|audit/i.test(userSample)) return 'Agent_Audit';
-  if (activeIds.has('Master') && /가상\s*오피스|virtual_office|agent-office-cli/i.test(userSample)) return 'Master';
+  if (activeIds.has('Master') && /가상\s*오피스|virtual\s*office|agent-office-cli|총괄|pm|매니저/i.test(userSample)) return 'Master';
 
   return null;
+}
+
+/**
+ * 사용자 입력, history.jsonl 작업 경로, 도구 호출 경로를 분석하여 에이전트 역할 식별
+ * @author Jangsung
+ * @param {String} convId
+ * @param {Array<Object>} headItems
+ * @param {Array<Object>} tailItems
+ * @param {Object} manualMapping
+ * @param {Array<Object>} activeAgents
+ * @param {Object} historyIndex
+ * @return {String|null}
+ */
+function detectAgentRole(convId, headItems, tailItems, manualMapping, activeAgents, historyIndex) {
+  if (manualMapping && manualMapping[convId]) {
+    const m = manualMapping[convId];
+    return m === 'NONE' ? null : m;
+  }
+
+  const activeList = Array.isArray(activeAgents) ? activeAgents : [];
+  const convMeta = historyIndex && historyIndex.byConvId ? historyIndex.byConvId.get(convId) : null;
+
+  if (convMeta && convMeta.workspaceKey) {
+    const wsMatches = activeList.filter(a => a && a.workspaceKey && a.workspaceKey === convMeta.workspaceKey);
+    const nonPresetMatches = wsMatches.filter(a => a.source !== 'preset');
+    if (wsMatches.length === 1) {
+      return wsMatches[0].id;
+    }
+    if (wsMatches.length > 1) {
+      const scopedMatch = matchRoleFromList(headItems, tailItems, wsMatches);
+      if (scopedMatch) return scopedMatch;
+      if (nonPresetMatches.length === 1) return nonPresetMatches[0].id;
+      const lead = wsMatches.find(a => a.isLead);
+      if (lead) return lead.id;
+    }
+    // 활성 팀원에 워크스페이스 소속 에이전트가 명시된 경우, 외부 워크스페이스 세션이 오인 매칭되지 않도록 차단
+    const hasWorkspaceScopedAgents = activeList.some(a => a && a.workspaceKey && a.source !== 'preset');
+    if (hasWorkspaceScopedAgents && wsMatches.length === 0) {
+      return null;
+    }
+  }
+
+  return matchRoleFromList(headItems, tailItems, activeList);
 }
 
 /**
@@ -420,10 +741,11 @@ function findCliTranscriptPath(convId) {
  * @param {String} logPath
  * @return {Object}
  */
-function analyzeSessionActivity(convId, stat, headText, tailText, manualMapping, logPath, activeAgents) {
+function analyzeSessionActivity(convId, stat, headText, tailText, manualMapping, logPath, activeAgents, historyIndex) {
   const headItems = parseJsonLines(headText);
   const tailItems = parseJsonLines(tailText);
-  const role = detectAgentRole(convId, headItems, tailItems, manualMapping, activeAgents);
+  const role = detectAgentRole(convId, headItems, tailItems, manualMapping, activeAgents, historyIndex);
+  const convMeta = historyIndex && historyIndex.byConvId ? historyIndex.byConvId.get(convId) : null;
 
   const now = Date.now();
   const ageSec = Math.max(0, (now - stat.mtimeMs) / 1000);
@@ -558,12 +880,41 @@ function analyzeSessionActivity(convId, stat, headText, tailText, manualMapping,
     bubbleText = `대기 (최근: ${taskPreview.slice(0, 18)})`;
   }
 
+  const tokenUsage = logPath ? readAntigravityTokenSummary(logPath, stat.size, stat.mtimeMs) : createEmptyTokenUsage();
+
+  let startedMs = Infinity;
+  for (let i = 0; i < headItems.length; i++) {
+    if (headItems[i] && headItems[i].created_at) {
+      const ms = new Date(headItems[i].created_at).getTime();
+      if (Number.isFinite(ms)) {
+        startedMs = ms;
+        break;
+      }
+    }
+  }
+  if (!Number.isFinite(startedMs) && tokenUsage.startedAtIso) {
+    const ms = new Date(tokenUsage.startedAtIso).getTime();
+    if (Number.isFinite(ms)) startedMs = ms;
+  }
+  if (!Number.isFinite(startedMs)) {
+    startedMs = (stat.birthtimeMs && stat.birthtimeMs > 0) ? Math.min(stat.birthtimeMs, stat.mtimeMs) : stat.mtimeMs;
+  }
+  const startedAtIso = new Date(startedMs).toISOString();
+  const lastActiveIso = new Date(stat.mtimeMs).toISOString();
+  const durationMs = Math.max(0, stat.mtimeMs - startedMs);
+  tokenUsage.startedAtIso = startedAtIso;
+  tokenUsage.lastActiveIso = lastActiveIso;
+  tokenUsage.durationMs = durationMs;
+
   return {
     convId,
     origin: 'cli',
     role,
+    workspacePath: convMeta ? convMeta.workspacePath : null,
     mtimeMs: stat.mtimeMs,
-    lastActiveIso: new Date(stat.mtimeMs).toISOString(),
+    startedAtIso,
+    lastActiveIso,
+    durationMs,
     ageSec: Math.round(ageSec),
     fileSizeBytes: stat.size,
     fileSizeMB,
@@ -574,13 +925,14 @@ function analyzeSessionActivity(convId, stat, headText, tailText, manualMapping,
     currentTaskSummary: taskSummary,
     currentTaskRaw: taskRaw,
     currentTool: latestToolName ? `${latestToolName}${latestToolTarget ? ` (${latestToolTarget})` : ''}` : '-',
+    tokenUsage,
     logs: logs.slice(-25),
     titlePreview: taskPreview !== '-' ? taskPreview : convId.slice(0, 8)
   };
 }
 
 /**
- * CLI brain 디렉터리를 스캔하여 최근 24시간 내 활성 세션 목록 반환
+ * CLI brain 디렉터리를 스캔하여 최근 CLI 세션 목록 반환 (최대 180일, 최신 80개)
  * @author Jangsung
  * @param {Map} sessionCache
  * @param {Object} manualMapping
@@ -590,9 +942,11 @@ function scanCliSessions(sessionCache, manualMapping, activeAgents) {
   const cliBrainDir = getCliBrainDir();
   if (!fs.existsSync(cliBrainDir)) return [];
 
-  const detectedSessions = [];
+  const historyIndex = readCliHistoryIndex();
+  const candidates = [];
   const dirs = fs.readdirSync(cliBrainDir, { withFileTypes: true });
-  const rosterSig = Array.isArray(activeAgents) ? activeAgents.map(a => a.id).join(',') : '';
+  const maxAgeMs = 180 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
 
   for (let i = 0; i < dirs.length; i++) {
     const dir = dirs[i];
@@ -608,12 +962,30 @@ function scanCliSessions(sessionCache, manualMapping, activeAgents) {
       continue;
     }
 
-    if (Date.now() - stat.mtimeMs > 24 * 60 * 60 * 1000) continue;
+    if (now - stat.mtimeMs > maxAgeMs) continue;
+    candidates.push({ convId, logPath, stat });
+  }
 
+  candidates.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  const topCandidates = candidates.slice(0, 80);
+  const rosterSig = (Array.isArray(activeAgents)
+    ? activeAgents.map(a => `${a.id}:${a.source || ''}:${a.workspaceKey || ''}`).join(',')
+    : '') + `|h:${historyIndexCache.mtimeMs}`;
+
+  const detectedSessions = [];
+  for (let i = 0; i < topCandidates.length; i++) {
+    const { convId, logPath, stat } = topCandidates[i];
     const cached = sessionCache.get(convId);
+    const manualRole = (manualMapping && manualMapping[convId]) ? String(manualMapping[convId]) : '';
     let analyzed;
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.rosterSig === rosterSig) {
-      const reAge = Math.max(0, (Date.now() - stat.mtimeMs) / 1000);
+    if (
+      cached
+      && cached.mtimeMs === stat.mtimeMs
+      && cached.size === stat.size
+      && cached.rosterSig === rosterSig
+      && cached.manualRole === manualRole
+    ) {
+      const reAge = Math.max(0, (now - stat.mtimeMs) / 1000);
       analyzed = { ...cached.analyzed, origin: 'cli', ageSec: Math.round(reAge) };
       if (analyzed.state !== 'IDLE' && reAge > 180) {
         analyzed.state = 'IDLE';
@@ -621,14 +993,11 @@ function scanCliSessions(sessionCache, manualMapping, activeAgents) {
           ? `대기 (최근: ${analyzed.currentTask.slice(0, 18)})`
           : '대기 중';
       }
-      if (manualMapping[convId]) {
-        analyzed.role = manualMapping[convId] === 'NONE' ? null : manualMapping[convId];
-      }
     } else {
       try {
         const { headText, tailText } = readHeadAndTail(logPath, stat.size);
-        analyzed = analyzeSessionActivity(convId, stat, headText, tailText, manualMapping, logPath, activeAgents);
-        sessionCache.set(convId, { mtimeMs: stat.mtimeMs, size: stat.size, rosterSig, analyzed });
+        analyzed = analyzeSessionActivity(convId, stat, headText, tailText, manualMapping, logPath, activeAgents, historyIndex);
+        sessionCache.set(convId, { mtimeMs: stat.mtimeMs, size: stat.size, rosterSig, manualRole, analyzed });
       } catch (_) {
         continue;
       }
@@ -713,6 +1082,9 @@ function readSessionMessages(convId, limit = 150) {
     } catch (_) {}
   }
 
+  const stat = fs.statSync(logPath);
+  const sessionUsage = summarizeAntigravityTokens(steps, false, stat.mtimeMs);
+
   const messages = [];
   for (let i = 0; i < sliced.length; i++) {
     const step = sliced[i];
@@ -738,6 +1110,19 @@ function readSessionMessages(convId, limit = 150) {
       const tCalls = Array.isArray(step.tool_calls) ? step.tool_calls.map(summarizeToolCall) : [];
       const text = rawContent.trim();
       if (!text && tCalls.length === 0) continue;
+      const inp = Number(step.input_tokens) || 0;
+      const cache = Number(step.cache_read_tokens) || 0;
+      const out = Number(step.output_tokens) || 0;
+      const msgUsage = (inp > 0 || cache > 0 || out > 0)
+        ? {
+            inputTokens: inp,
+            cacheReadTokens: cache,
+            outputTokens: out,
+            reasoningTokens: 0,
+            totalTokens: inp + cache + out,
+            model: typeof step.model === 'string' ? step.model : null
+          }
+        : null;
       messages.push({
         id: `a-${step.step_index ?? i}`,
         stepIndex: step.step_index ?? i,
@@ -747,7 +1132,8 @@ function readSessionMessages(convId, limit = 150) {
         isIntermediate: tCalls.length > 0,
         isError: false,
         status: step.status || 'DONE',
-        timestamp: step.created_at || null
+        timestamp: step.created_at || null,
+        usage: msgUsage
       });
     } else if (step.type === 'GENERIC') {
       const errMsg = (typeof step.error === 'string' && step.error.trim())
@@ -772,7 +1158,192 @@ function readSessionMessages(convId, limit = 150) {
     convId,
     totalSteps: steps.length,
     returnedCount: messages.length,
+    sessionUsage,
     messages
+  };
+}
+
+/**
+ * 대상 프로젝트에서 실제 존재하는 규칙 파일 상대 경로 해석
+ * @author Jangsung
+ * @param {String} workspaceNorm
+ * @param {String} safeRulesSub
+ * @param {String} agentId
+ * @param {String} domainPath
+ * @return {String|null}
+ */
+function resolveHandoverRuleRef(workspaceNorm, safeRulesSub, agentId, domainPath) {
+  if (!workspaceNorm) return null;
+  const candidates = [];
+  if (typeof domainPath === 'string' && domainPath.trim() && !domainPath.includes('(')) {
+    const cleanDomain = domainPath.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+    candidates.push(cleanDomain);
+    const wsBasePrefix = `${path.basename(workspaceNorm)}/`;
+    if (cleanDomain.startsWith(wsBasePrefix)) {
+      candidates.push(cleanDomain.slice(wsBasePrefix.length));
+    }
+  }
+  candidates.push(
+    'AGENTS.md',
+    'GEMINI.md',
+    `${safeRulesSub}/${agentId}/RULE.md`,
+    `${safeRulesSub}/${agentId}.md`
+  );
+  for (const rel of candidates) {
+    if (!rel || rel.includes('..')) continue;
+    const abs = path.join(workspaceNorm, rel);
+    try {
+      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+        return rel;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
+ * 추출된 세션 활동 데이터를 기반으로 표준 인수인계서 마크다운 작성 및 저장
+ * @author Jangsung
+ * @param {Object} params
+ * @return {Object}
+ */
+function writeHandoverMarkdownFile({
+  agentId,
+  convId,
+  fileSizeMB,
+  lastStepIndex,
+  userPrompts,
+  modifiedFiles,
+  commandList,
+  latestSummaryResponse,
+  latestFocus,
+  targetWorkspace,
+  rulesDir,
+  domainPath,
+  fallbackBaseDir
+}) {
+  const healthLabel = fileSizeMB >= 10 ? '위험' : (fileSizeMB >= 5 ? '주의' : '양호');
+  const workspaceNorm = targetWorkspace ? path.resolve(targetWorkspace) : '';
+  const safeRulesSub = (typeof rulesDir === 'string' && rulesDir.trim() && !rulesDir.includes('..'))
+    ? rulesDir.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    : '.agents/rules';
+
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const y = now.getFullYear();
+  const m = pad(now.getMonth() + 1);
+  const d = pad(now.getDate());
+  const hh = pad(now.getHours());
+  const mm = pad(now.getMinutes());
+  const ss = pad(now.getSeconds());
+
+  const dateTag = `${y}${m}${d}`;
+  const timeTag = `${hh}${mm}`;
+  const displayDt = `${y}-${m}-${d} ${hh}:${mm}`;
+  const displaySec = `${displayDt}:${ss}`;
+
+  const workspaceRulesBase = workspaceNorm ? path.join(workspaceNorm, safeRulesSub) : '';
+  const hasPerAgentRuleDir = Boolean(workspaceRulesBase && fs.existsSync(path.join(workspaceRulesBase, agentId, 'RULE.md')));
+  const relRuleRef = resolveHandoverRuleRef(workspaceNorm, safeRulesSub, agentId, domainPath);
+
+  let fileName = '';
+  let filePath = '';
+  let relPath = '';
+  let isExistingRootHandover = false;
+
+  if (hasPerAgentRuleDir) {
+    // 회사 다중 에이전트(RULE.md 폴더형) 프로젝트는 기존 handovers 하위 디렉터리 규약 유지
+    const handoverDir = path.join(workspaceRulesBase, agentId, 'handovers');
+    fs.mkdirSync(handoverDir, { recursive: true });
+    fileName = `HANDOVER_${dateTag}_${timeTag}_${agentId}.md`;
+    filePath = path.join(handoverDir, fileName);
+    relPath = `${safeRulesSub}/${agentId}/handovers/${fileName}`;
+  } else if (workspaceNorm) {
+    // 표준·개인 프로젝트는 대상 프로젝트 루트의 HANDOVER.md로 통일 (기존 파일이 있으면 HANDOVER.draft.md로 안전 보존)
+    const rootHandoverPath = path.join(workspaceNorm, 'HANDOVER.md');
+    isExistingRootHandover = fs.existsSync(rootHandoverPath);
+    fileName = isExistingRootHandover ? 'HANDOVER.draft.md' : 'HANDOVER.md';
+    filePath = path.join(workspaceNorm, fileName);
+    relPath = fileName;
+  } else {
+    const handoverDir = path.join(fallbackBaseDir, 'handovers', agentId);
+    fs.mkdirSync(handoverDir, { recursive: true });
+    fileName = `HANDOVER_${dateTag}_${timeTag}_${agentId}.md`;
+    filePath = path.join(handoverDir, fileName);
+    relPath = `handovers/${agentId}/${fileName}`;
+  }
+
+  const bootstrapHandoverPath = (!hasPerAgentRuleDir && workspaceNorm) ? 'HANDOVER.md' : relPath;
+  const recentReqLines = userPrompts.slice(-5).map((p, idx) => `${idx + 1}. ${p.replace(/\n+/g, ' / ')}`);
+  const fileLines = Array.from(modifiedFiles.entries()).slice(-20).map(([p, op]) => `- \`${p}\` (${op})`);
+  const cmdLines = commandList.slice(-8).map(c => `- ${c}`);
+
+  const docContent = `# [세션 인수인계서] ${agentId} (${displayDt})
+
+- 대상 에이전트: ${agentId}
+- 정리 시점 상태: ${healthLabel} (${fileSizeMB} MB / Step ${lastStepIndex.toLocaleString()})
+- 원본 세션 ID: \`${convId}\`
+- 작성 일시: ${displaySec}
+
+---
+
+## 1. 현재 수행 과업 및 최종 목표
+${recentReqLines.length > 0 ? recentReqLines.join('\n') : '- (최근 사용자 요청 기록 없음)'}
+${latestFocus ? `- 마지막 진행 단계: ${latestFocus}` : ''}
+
+## 2. 확정된 기술 결정 및 제약 조건
+- 본 문서는 세션 로그에서 자동 추출된 초안입니다. 확정된 스키마/설계 제약이 있다면 기존 세션에서 아래 항목으로 보완하거나 최신 응답 요약을 참조하세요.
+${latestSummaryResponse ? `- 최근 에이전트 보고 요약: ${latestSummaryResponse}` : '- (최근 요약 없음)'}
+
+## 3. 완료된 작업 및 변경 파일 목록
+${fileLines.length > 0 ? fileLines.join('\n') : '- (최근 스캔 범위 내 직접 수정/생성 파일 없음)'}
+
+## 4. 미완료 작업 및 즉시 이어갈 다음 단계
+1. 위 1번 과업 및 최근 변경 파일 기준으로 미완료 구현·검증 항목 이어서 진행
+${cmdLines.length > 0 ? `\n### 참고: 최근 실행 명령 이력\n${cmdLines.join('\n')}` : ''}
+
+## 5. 주의사항 및 미해결 이슈
+- 원본 세션 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 컨텍스트 압축 누락을 방지하기 위해 새 세션 전환을 권장합니다.
+
+## 6. 새 세션 시작용 복구 프롬프트 (Bootstrap Prompt)
+> ${relRuleRef ? '아래 규칙과 ' : ''}인수인계 문서를 먼저 읽고, 4번(다음 단계)부터 작업을 이어서 진행해줘.
+${relRuleRef ? `> - 참조 규칙: \`${relRuleRef}\`\n` : ''}> - 인수인계서: \`${bootstrapHandoverPath}\`
+`;
+
+  fs.writeFileSync(filePath, docContent, 'utf8');
+
+  const agentRefinePrompt = isExistingRootHandover
+    ? [
+        `현재 세션 로그 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 루트 \`HANDOVER.md\`를 최신 상태로 갱신하려 합니다.`,
+        `기존 \`HANDOVER.md\`를 보존하기 위해 새 세션 요약 초안을 \`${relPath}\`에 생성했습니다.`,
+        `- 요청 사항: \`${relPath}\`의 최근 작업 내용과 변경 파일을 검토하여 기존 \`HANDOVER.md\`를 최신 내용으로 병합·갱신한 뒤, 임시 초안 파일(\`${relPath}\`)은 삭제해주세요.`
+      ].join('\n')
+    : [
+        `현재 세션 로그 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 세션을 정리하고 새 창으로 이관하려 합니다.`,
+        `표준 양식(${relPath})으로 초안 파일이 이미 생성되어 있으니, 별도 파일이나 임의 제목을 새로 만들지 말고 아래 파일만 수정하여 내용을 보완해주세요.`,
+        `- 대상 파일: \`${relPath}\``,
+        `- 보완 요청: '2. 확정된 기술 결정 및 제약 조건', '4. 미완료 작업 및 즉시 이어갈 다음 단계', '5. 주의사항' 항목을 현재 작업 중인 코드와 맥락을 기준으로 보완해주세요.`
+      ].join('\n');
+
+  const bootstrapLines = [
+    `너는 ${agentId} 담당 에이전트다.`,
+    `먼저 ${relRuleRef ? '아래 규칙 파일과 ' : ''}직전 세션 인수인계서를 읽고 작업 맥락을 확인한 뒤, 인수인계서의 '4. 미완료 작업 및 즉시 이어갈 다음 단계'부터 작업을 이어서 진행해줘.`
+  ];
+  if (relRuleRef) bootstrapLines.push(`- 참조 규칙: ${relRuleRef}`);
+  bootstrapLines.push(`- 인수인계서: ${bootstrapHandoverPath}`);
+  const bootstrapPrompt = bootstrapLines.join('\n');
+
+  return {
+    agentId,
+    convId,
+    fileName,
+    filePath,
+    relPath,
+    fileSizeMB,
+    healthLabel,
+    content: docContent,
+    agentRefinePrompt,
+    bootstrapPrompt
   };
 }
 
@@ -782,7 +1353,7 @@ function readSessionMessages(convId, limit = 150) {
  * @param {Object} params
  * @return {Object}
  */
-function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, fallbackBaseDir }) {
+function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, domainPath, fallbackBaseDir }) {
   const found = findCliTranscriptPath(convId);
   if (!found) {
     throw new Error('CLI 세션 로그 파일을 찾을 수 없습니다: ' + convId);
@@ -790,7 +1361,6 @@ function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, 
   const logPath = found.logPath;
   const stat = fs.statSync(logPath);
   const fileSizeMB = Number((stat.size / (1024 * 1024)).toFixed(2));
-  const healthLabel = fileSizeMB >= 10 ? '위험' : (fileSizeMB >= 5 ? '주의' : '양호');
 
   const scanSize = Math.min(stat.size, HANDOVER_SCAN_BYTES);
   const fd = fs.openSync(logPath, 'r');
@@ -816,9 +1386,6 @@ function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, 
   let latestFocus = '';
 
   const workspaceNorm = targetWorkspace ? path.resolve(targetWorkspace) : '';
-  const safeRulesSub = (typeof rulesDir === 'string' && rulesDir.trim() && !rulesDir.includes('..'))
-    ? rulesDir.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
-    : 'Rules/Personal';
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -854,108 +1421,64 @@ function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, 
     }
   }
 
-  const now = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  const y = now.getFullYear();
-  const m = pad(now.getMonth() + 1);
-  const d = pad(now.getDate());
-  const hh = pad(now.getHours());
-  const mm = pad(now.getMinutes());
-  const ss = pad(now.getSeconds());
-
-  const dateTag = `${y}${m}${d}`;
-  const timeTag = `${hh}${mm}`;
-  const displayDt = `${y}-${m}-${d} ${hh}:${mm}`;
-  const displaySec = `${displayDt}:${ss}`;
-
-  const workspaceRulesBase = workspaceNorm ? path.join(workspaceNorm, safeRulesSub) : '';
-  const hasWorkspaceRules = workspaceRulesBase && fs.existsSync(workspaceRulesBase);
-  const handoverDir = hasWorkspaceRules
-    ? path.join(workspaceRulesBase, agentId, 'handovers')
-    : path.join(fallbackBaseDir, 'handovers', agentId);
-
-  fs.mkdirSync(handoverDir, { recursive: true });
-
-  const fileName = `HANDOVER_${dateTag}_${timeTag}_${agentId}.md`;
-  const filePath = path.join(handoverDir, fileName);
-  const relPath = hasWorkspaceRules
-    ? `${safeRulesSub}/${agentId}/handovers/${fileName}`
-    : `handovers/${agentId}/${fileName}`;
-  const relRuleRef = `${safeRulesSub}/${agentId}/RULE.md`;
-
-  const recentReqLines = userPrompts.slice(-5).map((p, idx) => `${idx + 1}. ${p.replace(/\n+/g, ' / ')}`);
-  const fileLines = Array.from(modifiedFiles.entries()).slice(-20).map(([p, op]) => `- \`${p}\` (${op})`);
-  const cmdLines = commandList.slice(-8).map(c => `- ${c}`);
-
-  const docContent = `# [세션 인수인계서] ${agentId} (${displayDt})
-
-- 대상 에이전트: ${agentId}
-- 정리 시점 상태: ${healthLabel} (${fileSizeMB} MB / Step ${lastStepIndex.toLocaleString()})
-- 원본 세션 ID: \`${convId}\`
-- 작성 일시: ${displaySec}
-
----
-
-## 1. 현재 수행 과업 및 최종 목표
-${recentReqLines.length > 0 ? recentReqLines.join('\n') : '- (최근 사용자 요청 기록 없음)'}
-${latestFocus ? `- 마지막 진행 단계: ${latestFocus}` : ''}
-
-## 2. 확정된 기술 결정 및 제약 조건
-- 본 문서는 세션 로그에서 자동 추출된 초안입니다. 확정된 스키마/설계 제약이 있다면 기존 세션에서 아래 항목으로 보완하거나 최신 응답 요약을 참조하세요.
-${latestSummaryResponse ? `- 최근 에이전트 보고 요약: ${latestSummaryResponse}` : '- (최근 요약 없음)'}
-
-## 3. 완료된 작업 및 변경 파일 목록
-${fileLines.length > 0 ? fileLines.join('\n') : '- (최근 스캔 범위 내 직접 수정/생성 파일 없음)'}
-
-## 4. 미완료 작업 및 즉시 이어갈 다음 단계
-1. 위 1번 과업 및 최근 변경 파일 기준으로 미완료 구현·검증 항목 이어서 진행
-${cmdLines.length > 0 ? `\n### 참고: 최근 실행 명령 이력\n${cmdLines.join('\n')}` : ''}
-
-## 5. 주의사항 및 미해결 이슈
-- 원본 세션 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 컨텍스트 압축 누락을 방지하기 위해 새 세션 전환을 권장합니다.
-
-## 6. 새 세션 시작용 복구 프롬프트 (Bootstrap Prompt)
-> ${agentId} 전담 규칙과 아래 인수인계 문서를 먼저 읽고, 4번(다음 단계)부터 작업을 이어서 진행해줘.
-> - 참조 규칙: \`${relRuleRef}\`
-> - 인수인계서: \`${relPath}\`
-`;
-
-  fs.writeFileSync(filePath, docContent, 'utf8');
-
-  const agentRefinePrompt = [
-    `현재 세션 로그 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 세션을 정리하고 새 창으로 이관하려 합니다.`,
-    `표준 양식(${relPath})으로 초안 파일이 이미 생성되어 있으니, 별도 파일이나 임의 제목을 새로 만들지 말고 아래 파일만 수정하여 내용을 보완해주세요.`,
-    `- 대상 파일: \`${relPath}\``,
-    `- 보완 요청: '2. 확정된 기술 결정 및 제약 조건', '4. 미완료 작업 및 즉시 이어갈 다음 단계', '5. 주의사항' 항목을 현재 작업 중인 코드와 맥락을 기준으로 보완해주세요.`
-  ].join('\n');
-
-  const bootstrapPrompt = [
-    `너는 ${agentId} 전담 에이전트다.`,
-    `먼저 아래 규칙 파일과 직전 세션 인수인계서를 읽고 작업 맥락을 확인한 뒤, 인수인계서의 '4. 미완료 작업 및 즉시 이어갈 다음 단계'부터 작업을 이어서 진행해줘.`,
-    `- 전담 규칙: ${relRuleRef}`,
-    `- 인수인계서: ${relPath}`
-  ].join('\n');
-
-  return {
+  return writeHandoverMarkdownFile({
     agentId,
     convId,
-    fileName,
-    filePath,
-    relPath,
     fileSizeMB,
-    healthLabel,
-    content: docContent,
-    agentRefinePrompt,
-    bootstrapPrompt
-  };
+    lastStepIndex,
+    userPrompts,
+    modifiedFiles,
+    commandList,
+    latestSummaryResponse,
+    latestFocus,
+    targetWorkspace,
+    rulesDir,
+    domainPath,
+    fallbackBaseDir
+  });
+}
+
+/**
+ * Antigravity CLI 세션 폴더 영구 삭제 (경로 이탈 차단 검증 포함)
+ * @author Jangsung
+ * @param {String} convId
+ * @return {Boolean}
+ */
+function deleteCliSession(convId) {
+  if (!isValidConvId(convId)) {
+    throw new Error('유효하지 않은 convId 형식입니다.');
+  }
+  const brainDir = path.resolve(getCliBrainDir());
+  const sessionDir = path.resolve(brainDir, convId);
+  const rel = path.relative(brainDir, sessionDir);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('허용되지 않은 세션 경로입니다.');
+  }
+  if (!fs.existsSync(sessionDir)) {
+    return false;
+  }
+  fs.rmSync(sessionDir, { recursive: true, force: true });
+  return true;
 }
 
 module.exports = {
   getCliBrainDir,
+  normalizeFsPathKey,
+  readCliHistoryIndex,
   readJsonSafe,
+  parseJsonLines,
+  readHeadAndTail,
+  createEmptyTokenUsage,
+  localDateKey,
+  accumulateDailyTokens,
+  extractPromptSummaryAndRaw,
+  matchRoleFromList,
+  resolveHandoverRuleRef,
+  writeHandoverMarkdownFile,
   isValidConvId,
   findCliTranscriptPath,
   scanCliSessions,
   readSessionMessages,
-  generateHandoverDocument
+  generateHandoverDocument,
+  deleteCliSession
 };

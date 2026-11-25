@@ -267,6 +267,41 @@ export function assignAgentSeats(agentSource, meetingActive = false, layoutSpec 
 }
 
 /**
+ * 세션 용량 건강도 3단계(+미연결) 판정 기준 안내 메타
+ * @author Jangsung
+ */
+export const HEALTH_CRITERIA = [
+  {
+    level: 'ok',
+    label: '양호',
+    cls: 'health-ok',
+    threshold: '< 5 MB',
+    desc: '세션 크기가 쾌적하여 정상적으로 대화를 이어갈 수 있습니다.'
+  },
+  {
+    level: 'warn',
+    label: '주의',
+    cls: 'health-warn',
+    threshold: '5 MB ~ 10 MB 미만',
+    desc: '로그가 누적되어 응답 지연이 시작될 수 있습니다. [세션 정리]를 권장합니다.'
+  },
+  {
+    level: 'danger',
+    label: '위험',
+    cls: 'health-danger',
+    threshold: '≥ 10 MB',
+    desc: '컨텍스트 비대화 위험이 큽니다. [세션 정리] 후 새 세션 전환을 권장합니다.'
+  },
+  {
+    level: 'none',
+    label: '미연결',
+    cls: 'health-none',
+    threshold: '세션 없음',
+    desc: '에이전트에 연결된 CLI 세션이 없습니다.'
+  }
+];
+
+/**
  * 세션 파일 크기(MB) 기반 3단계 건강도 메타 반환
  * @author Jangsung
  * @param {Number} fileSizeMB
@@ -297,22 +332,23 @@ export function getHealthMeta(fileSizeMB, hasSession) {
 export function resolveDynamicWorkers(sessions, assignedConvIds) {
   if (!Array.isArray(sessions) || sessions.length === 0) return [];
   const unassignedActive = sessions.filter(
-    s => !s.role && !assignedConvIds.has(s.convId) && (s.state === 'WORKING' || s.state === 'PLANNING' || s.ageSec <= 600)
+    s => !s.archived && !s.role && !assignedConvIds.has(s.convId) && (s.state === 'WORKING' || s.state === 'PLANNING' || s.ageSec <= 600)
   );
   return unassignedActive.slice(0, EXTRA_WORKER_SLOTS.length).map((s, idx) => {
     const slot = EXTRA_WORKER_SLOTS[idx];
+    const isCodex = s.origin === 'codex';
     return {
       id: `CLI_${s.convId.slice(0, 6)}`,
-      name: `CLI-${s.convId.slice(0, 4)}`,
-      role: 'CLI 세션 워커',
-      domainPath: '~/.gemini/antigravity-cli',
+      name: `${isCodex ? 'CDX' : 'CLI'}-${s.convId.slice(0, 4)}`,
+      role: isCodex ? 'Codex 세션 워커' : 'CLI 세션 워커',
+      domainPath: isCodex ? '~/.codex/sessions' : '~/.gemini/antigravity-cli',
       shirtColor: slot.shirtColor,
       desk: slot.desk,
       lounge: slot.lounge,
       meetingSeat: slot.meetingSeat,
       isDynamicWorker: true,
       convId: s.convId,
-      convOrigin: 'cli',
+      convOrigin: s.origin || 'cli',
       state: s.state || 'IDLE',
       bubbleText: s.titlePreview || 'CLI 세션',
       currentTask: s.titlePreview || '-',

@@ -32,7 +32,7 @@
 | :--- | :--- | :--- |
 | `OFFICE_PORT` | `3110` | 브리지 서버 포트 (기존 `3100` 포트 서버와 충돌 방지 목적) |
 | `OFFICE_HOST` | `127.0.0.1` | 브리지 서버 바인딩 주소 |
-| `TARGET_WORKSPACE` | `e:\github\dcim` | `agy.exe` 실행 작업 디렉터리 및 규칙 스캔 기준 경로 |
+| `TARGET_WORKSPACE` | `현재 실행 경로 (process.cwd())` | `agy.exe` 실행 작업 디렉터리 및 규칙 스캔 기준 경로 |
 | `AGY_BIN` | `%LOCALAPPDATA%\agy\bin\agy.exe` | Antigravity CLI 실행 바이너리 경로 |
 | `ANTIGRAVITY_CLI_BRAIN_DIR` | `~/.gemini/antigravity-cli/brain` | CLI 세션 로그 저장 디렉터리 |
 

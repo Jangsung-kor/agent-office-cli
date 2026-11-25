@@ -6,13 +6,24 @@
         v-model="workspaceDraft"
         class="workspace-input"
         type="text"
-        placeholder="대상 작업 경로 (예: e:\github\dcim)"
+        placeholder="대상 작업 경로 (예: C:\projects\my-app)"
         @keydown.enter="submitWorkspace"
       />
       <button type="button" class="btn btn-primary btn-sm" @click="submitWorkspace">경로 적용</button>
     </div>
 
     <div class="hud-controls">
+      <button
+        type="button"
+        class="provider-pill"
+        title="AI 백엔드 선택 화면으로 이동"
+        @click="emitAction('OPEN_PROVIDER_SELECTOR')"
+      >
+        <span class="provider-tag">AI</span>
+        <span class="provider-name">{{ hudInfo.providerName || 'ANTIGRAVITY' }}</span>
+        <span class="provider-change">변경</span>
+      </button>
+
       <span :class="['live-pill', hudInfo.bridgeConnected ? 'is-online' : 'is-offline']">
         <span class="live-dot"></span>
         <span>{{ hudInfo.bridgeConnected ? 'LIVE: ON' : '연결 대기' }}</span>
@@ -25,6 +36,24 @@
         </div>
         <span>{{ hudInfo.pipelineStats.activeCount }}/{{ hudInfo.pipelineStats.total }}</span>
       </div>
+
+      <button
+        type="button"
+        class="btn btn-sm token-hud-btn"
+        :title="tokenTooltip"
+        @click="emitAction('OPEN_TOKEN_MODAL')"
+      >
+        토큰 오늘 {{ formattedTodayTokens }} / 누적 {{ formattedTotalTokens }}
+      </button>
+
+      <button
+        type="button"
+        :class="['btn', 'btn-sm', { 'btn-working-alert': workingSessionCount > 0 }]"
+        title="세션 작업 현황 확인, 정리(보관/삭제), 작업 중 세션 종료"
+        @click="emitAction('OPEN_SESSION_MODAL')"
+      >
+        세션 ({{ workingSessionCount > 0 ? `작업 ${workingSessionCount} / ` : '' }}{{ activeSessionCount }})
+      </button>
 
       <button
         type="button"
@@ -54,7 +83,8 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { formatTokens, formatPeriodRange } from '@/utils/formatters';
 
 const props = defineProps({
   hudInfo: {
@@ -66,6 +96,29 @@ const props = defineProps({
 const emit = defineEmits(['action']);
 
 const workspaceDraft = ref(props.hudInfo.targetWorkspace || '');
+
+const formattedTotalTokens = computed(() =>
+  formatTokens(props.hudInfo.tokenSummary && props.hudInfo.tokenSummary.totalTokens)
+);
+
+const formattedTodayTokens = computed(() =>
+  formatTokens(props.hudInfo.tokenSummary && props.hudInfo.tokenSummary.todayTokens)
+);
+
+const tokenTooltip = computed(() => {
+  const ts = props.hudInfo.tokenSummary;
+  if (!ts || !ts.periodStartIso) return '세션별 토큰 사용량 상세 보기';
+  const range = formatPeriodRange(ts.periodStartIso, ts.periodEndIso, ts.durationMs, true);
+  return `집계 기간: ${range} · 클릭하여 기간별/세션별 토큰 상세 보기`;
+});
+
+const workingSessionCount = computed(() =>
+  Number(props.hudInfo.tokenSummary && props.hudInfo.tokenSummary.workingSessionCount) || 0
+);
+
+const activeSessionCount = computed(() =>
+  Number(props.hudInfo.tokenSummary && props.hudInfo.tokenSummary.activeSessionCount) || 0
+);
 
 watch(
   () => props.hudInfo.targetWorkspace,
@@ -153,6 +206,43 @@ function submitWorkspace() {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.provider-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background-color: $bg-input;
+  border: 1px solid $navy-border;
+  border-radius: 4px;
+  color: $text-primary;
+  font-family: $font-mono;
+  font-size: 11px;
+  cursor: pointer;
+
+  &:hover {
+    background-color: $bg-hover;
+    border-color: $state-working;
+  }
+}
+
+.provider-tag {
+  color: $text-muted;
+  font-weight: 700;
+}
+
+.provider-name {
+  color: $term-blue;
+  font-weight: 700;
+}
+
+.provider-change {
+  padding-left: 5px;
+  border-left: 1px solid $border-subtle;
+  font-family: $font-sans;
+  font-size: 10.5px;
+  color: $text-secondary;
 }
 
 .live-pill {
@@ -250,5 +340,16 @@ function submitWorkspace() {
   background-color: $navy-accent;
   border-color: $state-working;
   color: $text-primary;
+}
+
+.token-hud-btn {
+  font-family: $font-mono;
+  color: $term-blue;
+}
+
+.btn-working-alert {
+  border-color: $state-working;
+  color: $term-blue;
+  background-color: rgba(59, 130, 246, 0.14);
 }
 </style>
