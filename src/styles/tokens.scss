@@ -1,0 +1,40 @@
+// 전사 다크 모드 + 무채색/네이비 Flat 테마 토큰
+// 고채도 원색, 그림자, 그라데이션 사용을 배제하고 일관된 다크 톤을 유지함
+
+$bg-base: #0d1117;
+$bg-surface: #141a24;
+$bg-elevated: #1b2332;
+$bg-header: #161d29;
+$bg-input: #10151c;
+$bg-hover: #212b3d;
+
+$border-subtle: #263144;
+$border-strong: #34435c;
+
+$text-primary: #e2e8f0;
+$text-secondary: #94a3b8;
+$text-muted: #8595ad;
+
+$navy-accent: #1e2761;
+$navy-accent-hover: #283582;
+$navy-border: #3b4b8c;
+
+$state-idle: #64748b;
+$state-planning: #818cf8;
+$state-working: #3b82f6;
+$state-review: #2dd4bf;
+$state-blocked: #d97706;
+$state-done: #10b981;
+$state-danger: #e11d48;
+
+// B안(인터랙티브 터미널) 계승 다크 터미널 토큰
+$term-bg: #0b0f17;
+$term-bar: #161d29;
+$term-green: #34d399;
+$term-blue: #38bdf8;
+$term-yellow: #fbbf24;
+$term-warn: #d97706;
+$term-danger: #fb7185;
+
+$font-sans: 'Pretendard', 'Noto Sans KR', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+$font-mono: 'JetBrains Mono', 'Cascadia Code', 'D2Coding', 'Consolas', monospace;
