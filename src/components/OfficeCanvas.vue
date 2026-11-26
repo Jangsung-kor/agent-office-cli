@@ -47,10 +47,8 @@ const canvasRef = ref(null);
 
 const legendItems = [
   { key: 'idle', label: 'IDLE(대기)' },
-  { key: 'planning', label: 'PLANNING(분석)' },
-  { key: 'working', label: 'WORKING(수행)' },
-  { key: 'review', label: 'REVIEW(검증)' },
-  { key: 'blocked', label: 'BLOCKED(중단)' },
+  { key: 'working', label: 'WORKING(작업중)' },
+  { key: 'blocked', label: 'BLOCKED(중단/오류)' },
   { key: 'done', label: 'DONE(완료)' }
 ];
 
@@ -85,7 +83,6 @@ function emitAction(type, payload) {
 function syncRenderAgents(rawAgents, snapImmediately = false) {
   const positioned = assignAgentSeats(
     rawAgents || [],
-    Boolean(props.canvasState.meetingActive),
     currentSpec
   );
   const activeIds = new Set();
@@ -119,8 +116,8 @@ function syncRenderAgents(rawAgents, snapImmediately = false) {
 }
 
 watch(
-  () => [props.canvasState.agents, props.canvasState.meetingActive],
-  ([nextAgents]) => {
+  () => props.canvasState.agents,
+  nextAgents => {
     syncRenderAgents(nextAgents || [], false);
   },
   { immediate: true, deep: true }
@@ -614,13 +611,11 @@ function formatCompactElapsed(isoStr, withSuffix = true) {
  * @return {String}
  */
 function formatAgentBadgeRight(a) {
-  if (props.canvasState.meetingActive) return '회의중';
-
   if (a.cliRunning) {
     return formatCompactElapsed((a.activeStream && a.activeStream.startedAt) || a.lastActiveIso, false) || '0s';
   }
 
-  if (a.state === 'WORKING' || a.state === 'PLANNING' || a.state === 'REVIEW') {
+  if (a.state === 'WORKING') {
     return formatCompactElapsed(a.lastActiveIso, false) || '진행중';
   }
 
@@ -906,9 +901,7 @@ onUnmounted(() => {
   border-radius: 50%;
 
   &.dot-idle { background-color: $state-idle; }
-  &.dot-planning { background-color: $state-planning; }
   &.dot-working { background-color: $state-working; }
-  &.dot-review { background-color: $state-review; }
   &.dot-blocked { background-color: $state-blocked; }
   &.dot-done { background-color: $state-done; }
 }

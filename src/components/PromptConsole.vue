@@ -65,7 +65,20 @@
 
       <div class="action-bar">
         <div class="action-status">
-          <span v-if="consoleData.lastError" class="error-text">{{ consoleData.lastError }}</span>
+          <div v-if="consoleData.lastError" class="error-status-row">
+            <span class="error-text" :title="consoleData.lastError">
+              {{ displayLastErrorText }}
+            </span>
+            <button
+              type="button"
+              class="error-explain-btn"
+              :disabled="lastErrorExplainLoading"
+              title="기존 대화 세션과 분리해 원인 해석"
+              @click="requestLastErrorExplain"
+            >
+              {{ lastErrorExplainLoading ? '해석 중...' : '원인 해석' }}
+            </button>
+          </div>
           <span v-else class="hint-text">
             대상: {{ consoleData.agent.id }}
             <template v-if="consoleData.agent.convId && !consoleData.promptPrefs.createNewSession">
@@ -111,6 +124,7 @@
 
 <script setup>
 import { ref, computed } from 'vue';
+import { makeErrorKey, translateErrorByRules } from '@/utils/errorHints';
 
 const props = defineProps({
   consoleData: {
@@ -122,6 +136,39 @@ const props = defineProps({
 const emit = defineEmits(['action']);
 
 const promptDraft = ref('');
+
+const lastErrorAiEntry = computed(() => {
+  const raw = props.consoleData.lastError;
+  if (!raw) return null;
+  const map = props.consoleData.errorExplanations || {};
+  return map[makeErrorKey(raw)] || null;
+});
+
+const lastErrorExplainLoading = computed(() => Boolean(lastErrorAiEntry.value && lastErrorAiEntry.value.loading));
+
+const displayLastErrorText = computed(() => {
+  const raw = props.consoleData.lastError;
+  if (!raw) return '';
+  const entry = lastErrorAiEntry.value;
+  if (entry && entry.aiExplanation) {
+    return entry.aiExplanation.replace(/\s+/g, ' ').trim();
+  }
+  if (props.consoleData.errorExplainMode === 'friendly') {
+    const hint = translateErrorByRules(raw);
+    if (hint && hint.matched) return `${hint.title}: ${hint.summary}`;
+  }
+  return raw;
+});
+
+function requestLastErrorExplain() {
+  const raw = props.consoleData.lastError;
+  if (!raw) return;
+  emitAction('EXPLAIN_ERROR', {
+    errorText: raw,
+    commandLine: '',
+    agentId: props.consoleData.agent && props.consoleData.agent.id
+  });
+}
 
 const DEFAULT_EFFORTS = [
   { id: 'auto', label: 'auto (기본)' },
@@ -206,7 +253,6 @@ const isBusy = computed(() => {
     props.consoleData.isSubmitting
     || a.cliRunning
     || a.state === 'WORKING'
-    || a.state === 'PLANNING'
   );
 });
 
@@ -391,9 +437,40 @@ function onTextareaKeydown(ev) {
   display: block;
 }
 
+.error-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .error-text {
   font-size: 11.5px;
   color: $term-danger;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-explain-btn {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  background-color: $bg-elevated;
+  border: 1px solid $border-strong;
+  border-radius: 3px;
+  color: $text-secondary;
+  font-size: 10.5px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: $state-working;
+    color: $text-primary;
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 }
 
 .action-buttons {

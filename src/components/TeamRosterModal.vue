@@ -1,22 +1,22 @@
 <template>
-  <div v-if="visible" class="modal-backdrop" @click.self="closeModal">
-    <div class="modal-dialog">
-      <header class="modal-header">
-        <span class="modal-title">팀원 및 에이전트 구성</span>
-        <div class="header-actions">
-          <button
-            type="button"
-            class="btn btn-sm"
-            :disabled="rosterData.loading"
-            @click="emitAction('FETCH_AGENTS', { refresh: true })"
-          >
-            {{ rosterData.loading ? '스캔 중...' : '전체 목록 새로고침' }}
-          </button>
-          <button type="button" class="btn btn-sm" @click="closeModal">닫기</button>
-        </div>
-      </header>
-
-      <div class="modal-body">
+  <BaseModal
+    :visible="visible"
+    title="팀원 및 에이전트 구성"
+    max-width="860px"
+    max-height="90vh"
+    body-gap="14px"
+    @close="closeModal"
+  >
+    <template #header-actions>
+      <button
+        type="button"
+        class="btn btn-sm"
+        :disabled="rosterData.loading"
+        @click="emitAction('FETCH_AGENTS', { refresh: true })"
+      >
+        {{ rosterData.loading ? '스캔 중...' : '전체 목록 새로고침' }}
+      </button>
+    </template>
         <!-- 대상 프로젝트 및 규칙 경로 설정 -->
         <div class="workspace-meta-box">
           <div class="meta-row">
@@ -248,25 +248,24 @@
         </section>
 
         <div v-if="rosterData.error" class="error-box">{{ rosterData.error }}</div>
-      </div>
 
-      <footer class="modal-footer">
-        <button
-          type="button"
-          class="btn btn-primary"
-          :disabled="draftSelectedIds.length === 0 || rosterData.loading"
-          @click="saveRoster"
-        >
-          선택 팀원 적용 ({{ draftSelectedIds.length }}명)
-        </button>
-        <button type="button" class="btn" @click="closeModal">닫기</button>
-      </footer>
-    </div>
-  </div>
+    <template #footer>
+      <button
+        type="button"
+        class="btn btn-primary"
+        :disabled="draftSelectedIds.length === 0 || rosterData.loading"
+        @click="saveRoster"
+      >
+        선택 팀원 적용 ({{ draftSelectedIds.length }}명)
+      </button>
+      <button type="button" class="btn" @click="closeModal">닫기</button>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch } from 'vue';
+import BaseModal from '@/components/BaseModal.vue';
 
 const props = defineProps({
   visible: {
@@ -439,56 +438,6 @@ function removeCustomAgent(id) {
 </script>
 
 <style lang="scss" scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(8, 11, 16, 0.8);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-dialog {
-  width: min(860px, 94vw);
-  max-height: 90vh;
-  background-color: $bg-surface;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal-header {
-  padding: 12px 16px;
-  background-color: $bg-header;
-  border-bottom: 1px solid $border-subtle;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.modal-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: $text-primary;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.modal-body {
-  padding: 14px 16px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
 
 .workspace-meta-box {
   padding: 10px 12px;

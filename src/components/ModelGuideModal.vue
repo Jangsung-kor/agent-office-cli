@@ -1,22 +1,22 @@
 <template>
-  <div v-if="visible" class="modal-backdrop" @click.self="closeModal">
-    <div class="modal-dialog">
-      <header class="modal-header">
-        <span class="modal-title">AI 모델별 성능 및 추론 강도 안내</span>
-        <button type="button" class="btn btn-sm" @click="closeModal">닫기</button>
-      </header>
+  <BaseModal
+    :visible="Boolean(modalData.visible)"
+    title="AI 모델별 성능 및 추론 강도 안내"
+    max-width="820px"
+    max-height="86vh"
+    body-gap="0px"
+    @close="closeModal"
+  >
+    <p class="modal-desc">
+      <template v-if="modalData.providerId === 'codex'">
+        Codex CLI 모델별 추론 특성과 <code>model_reasoning_effort</code> 단계를 기준으로 적합한 조합을 선택하세요.
+      </template>
+      <template v-else>
+        작업 난이도와 응답 속도, 토큰 소모량을 기준으로 적합한 모델과 추론 강도(--effort)를 선택하세요.
+      </template>
+    </p>
 
-      <div class="modal-body">
-        <p class="modal-desc">
-          <template v-if="providerId === 'codex'">
-            Codex CLI 모델별 추론 특성과 <code>model_reasoning_effort</code> 단계를 기준으로 적합한 조합을 선택하세요.
-          </template>
-          <template v-else>
-            작업 난이도와 응답 속도, 토큰 소모량을 기준으로 적합한 모델과 추론 강도(--effort)를 선택하세요.
-          </template>
-        </p>
-
-        <template v-if="providerId === 'codex'">
+    <template v-if="modalData.providerId === 'codex'">
           <div class="section-title">1. Codex 모델 계열별 비교</div>
           <table class="guide-table">
             <thead>
@@ -180,25 +180,20 @@
             </tbody>
           </table>
         </template>
-      </div>
-
-      <footer class="modal-footer">
-        <button type="button" class="btn" @click="refreshModels">모델 목록 새로고침</button>
-        <button type="button" class="btn btn-primary" @click="closeModal">확인</button>
-      </footer>
-    </div>
-  </div>
+    <template #footer>
+      <button type="button" class="btn" @click="refreshModels">모델 목록 새로고침</button>
+      <button type="button" class="btn btn-primary" @click="closeModal">확인</button>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup>
+import BaseModal from '@/components/BaseModal.vue';
+
 defineProps({
-  visible: {
-    type: Boolean,
-    default: false
-  },
-  providerId: {
-    type: String,
-    default: 'antigravity'
+  modalData: {
+    type: Object,
+    required: true
   }
 });
 
@@ -214,50 +209,6 @@ function closeModal() {
 </script>
 
 <style lang="scss" scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(8, 11, 16, 0.8);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-dialog {
-  width: min(820px, 92vw);
-  max-height: 86vh;
-  background-color: $bg-surface;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal-header {
-  padding: 12px 16px;
-  background-color: $bg-header;
-  border-bottom: 1px solid $border-subtle;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.modal-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: $text-primary;
-}
-
-.modal-body {
-  padding: 14px 16px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 
 .modal-desc {
   font-size: 12px;

@@ -1,17 +1,17 @@
 <template>
-  <div v-if="visible" class="modal-backdrop" @click.self="closeModal">
-    <div class="modal-dialog">
-      <header class="modal-header">
-        <div class="header-left">
-          <span class="modal-title">세션 통합 관리 & 작업 현황 ({{ sessionData.providerLabel || 'CLI' }})</span>
-          <span class="status-summary mono">
-            작업 중 {{ workingCount }} · 활성 {{ activeCount }} · 보관 {{ archivedCount }}
-          </span>
-        </div>
-        <button type="button" class="btn btn-sm" @click="closeModal">닫기</button>
-      </header>
-
-      <div class="modal-body">
+  <BaseModal
+    :visible="visible"
+    max-width="1040px"
+    max-height="90vh"
+    body-gap="10px"
+    @close="closeModal"
+  >
+    <template #header>
+      <span class="modal-title">세션 통합 관리 & 작업 현황 ({{ sessionData.providerLabel || 'CLI' }})</span>
+      <span class="status-summary mono">
+        작업 중 {{ workingCount }} · 활성 {{ activeCount }} · 보관 {{ archivedCount }}
+      </span>
+    </template>
         <!-- 필터 탭 & 검색 -->
         <div class="toolbar-row">
           <div class="filter-tabs">
@@ -44,10 +44,22 @@
                 :disabled="filteredSessions.length === 0"
                 @change="toggleSelectAll"
               />
-              <span>현재 목록 전체 ({{ selectedIds.length }}개 선택)</span>
+              <span>현재 목록 전체 ({{ selectedIds.length }}/{{ filteredSessions.length }})</span>
             </label>
-            <button type="button" class="btn btn-xs" @click="selectSmallOrIdle">
-              빈·초기 세션 선택 (≤0.05MB)
+            <button
+              type="button"
+              :class="['btn', 'btn-xs', { 'btn-filter-active': showDetailFilters || activeDetailCount > 0 }]"
+              @click="showDetailFilters = !showDetailFilters"
+            >
+              상세 조건{{ activeDetailCount > 0 ? ` (${activeDetailCount})` : '' }}
+            </button>
+            <button
+              v-if="activeDetailCount > 0"
+              type="button"
+              class="btn btn-xs"
+              @click="resetDetailFilters"
+            >
+              조건 초기화
             </button>
           </div>
 
@@ -76,6 +88,70 @@
             >
               선택 영구 삭제
             </button>
+          </div>
+        </div>
+
+        <!-- 상세 조건 필터 패널 (용량·토큰) -->
+        <div v-if="showDetailFilters" class="detail-filter-panel">
+          <div class="df-grid">
+            <div class="df-field">
+              <span class="df-label">용량 범위 (MB)</span>
+              <div class="df-range">
+                <input
+                  v-model="detailFilters.minSizeMB"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  class="df-input mono"
+                  placeholder="최소 MB"
+                />
+                <span class="df-sep">~</span>
+                <input
+                  v-model="detailFilters.maxSizeMB"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  class="df-input mono"
+                  placeholder="최대 MB"
+                />
+              </div>
+              <div class="df-presets">
+                <button type="button" class="preset-chip" @click="applySizePreset('', '')">전체</button>
+                <button type="button" class="preset-chip" @click="applySizePreset('', '0.05')">≤0.05MB</button>
+                <button type="button" class="preset-chip" @click="applySizePreset('0.05', '5')">0.05~5MB</button>
+                <button type="button" class="preset-chip" @click="applySizePreset('5', '')">≥5MB</button>
+              </div>
+            </div>
+
+            <div class="df-field">
+              <span class="df-label">토큰 사용량 (totalTokens)</span>
+              <div class="df-range">
+                <input
+                  v-model="detailFilters.minTokens"
+                  type="number"
+                  min="0"
+                  step="1000"
+                  class="df-input mono"
+                  placeholder="최소 토큰"
+                />
+                <span class="df-sep">~</span>
+                <input
+                  v-model="detailFilters.maxTokens"
+                  type="number"
+                  min="0"
+                  step="1000"
+                  class="df-input mono"
+                  placeholder="최대 토큰"
+                />
+              </div>
+              <div class="df-presets">
+                <button type="button" class="preset-chip" @click="applyTokenPreset('', '')">전체</button>
+                <button type="button" class="preset-chip" @click="applyTokenPreset('0', '0')">0 (없음)</button>
+                <button type="button" class="preset-chip" @click="applyTokenPreset('10000', '')">≥10K</button>
+                <button type="button" class="preset-chip" @click="applyTokenPreset('100000', '')">≥100K</button>
+                <button type="button" class="preset-chip" @click="applyTokenPreset('1000000', '')">≥1M</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -207,20 +283,19 @@
         </div>
 
         <div v-if="sessionData.error" class="error-box">{{ sessionData.error }}</div>
-      </div>
 
-      <footer class="modal-footer">
-        <span class="footer-note">
-          [보관] 처리한 세션은 디스크 파일을 유지한 채 매핑 드롭다운과 오피스 워커에서 숨겨집니다.
-        </span>
-        <button type="button" class="btn btn-primary" @click="closeModal">닫기</button>
-      </footer>
-    </div>
-  </div>
+    <template #footer>
+      <span class="footer-note">
+        [보관] 처리한 세션은 디스크 파일을 유지한 채 매핑 드롭다운과 오피스 워커에서 숨겨집니다.
+      </span>
+      <button type="button" class="btn btn-primary" @click="closeModal">닫기</button>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch } from 'vue';
+import BaseModal from '@/components/BaseModal.vue';
 
 const props = defineProps({
   visible: {
@@ -237,6 +312,13 @@ const emit = defineEmits(['action']);
 
 const activeFilter = ref('active');
 const searchQuery = ref('');
+const showDetailFilters = ref(false);
+const detailFilters = reactive({
+  minSizeMB: '',
+  maxSizeMB: '',
+  minTokens: '',
+  maxTokens: ''
+});
 const selectedIds = ref([]);
 const pendingDeleteIds = ref([]);
 const editingAliasId = ref('');
@@ -274,13 +356,40 @@ const filterTabs = computed(() => [
   { id: 'all', label: '전체', count: allSessions.value.length }
 ]);
 
+function parseOptionalNumber(raw) {
+  if (raw === '' || raw === null || raw === undefined) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+const activeDetailCount = computed(() => {
+  let count = 0;
+  if (parseOptionalNumber(detailFilters.minSizeMB) !== null || parseOptionalNumber(detailFilters.maxSizeMB) !== null) count += 1;
+  if (parseOptionalNumber(detailFilters.minTokens) !== null || parseOptionalNumber(detailFilters.maxTokens) !== null) count += 1;
+  return count;
+});
+
 const filteredSessions = computed(() => {
   const q = (searchQuery.value || '').trim().toLowerCase();
+  const minSize = parseOptionalNumber(detailFilters.minSizeMB);
+  const maxSize = parseOptionalNumber(detailFilters.maxSizeMB);
+  const minTok = parseOptionalNumber(detailFilters.minTokens);
+  const maxTok = parseOptionalNumber(detailFilters.maxTokens);
+
   return allSessions.value.filter(s => {
     if (activeFilter.value === 'active' && s.archived) return false;
     if (activeFilter.value === 'working' && !s.isWorking) return false;
     if (activeFilter.value === 'unassigned' && (s.archived || s.role)) return false;
     if (activeFilter.value === 'archived' && !s.archived) return false;
+
+    const sizeMB = Number(s.fileSizeMB || 0);
+    if (minSize !== null && sizeMB < minSize) return false;
+    if (maxSize !== null && sizeMB > maxSize) return false;
+
+    const totalTokens = Number((s.tokenUsage && s.tokenUsage.totalTokens) || 0);
+    if (minTok !== null && totalTokens < minTok) return false;
+    if (maxTok !== null && totalTokens > maxTok) return false;
+
     if (!q) return true;
     const hay = [
       s.convId,
@@ -339,10 +448,21 @@ function toggleSelectAll() {
   }
 }
 
-function selectSmallOrIdle() {
-  selectedIds.value = filteredSessions.value
-    .filter(s => !s.isWorking && Number(s.fileSizeMB || 0) <= 0.05)
-    .map(s => s.convId);
+function applySizePreset(minVal, maxVal) {
+  detailFilters.minSizeMB = minVal;
+  detailFilters.maxSizeMB = maxVal;
+}
+
+function applyTokenPreset(minVal, maxVal) {
+  detailFilters.minTokens = minVal;
+  detailFilters.maxTokens = maxVal;
+}
+
+function resetDetailFilters() {
+  detailFilters.minSizeMB = '';
+  detailFilters.maxSizeMB = '';
+  detailFilters.minTokens = '';
+  detailFilters.maxTokens = '';
 }
 
 function startEditAlias(s) {
@@ -422,45 +542,6 @@ function closeModal() {
 </script>
 
 <style lang="scss" scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(8, 11, 16, 0.82);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-dialog {
-  width: min(1040px, 95vw);
-  max-height: 90vh;
-  background-color: $bg-surface;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal-header {
-  padding: 12px 16px;
-  background-color: $bg-header;
-  border-bottom: 1px solid $border-subtle;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.header-left {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .modal-title {
   font-size: 14px;
   font-weight: 700;
@@ -470,14 +551,6 @@ function closeModal() {
 .status-summary {
   font-size: 11px;
   color: $term-blue;
-}
-
-.modal-body {
-  padding: 14px 16px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .toolbar-row {
@@ -635,7 +708,6 @@ function closeModal() {
   color: $text-muted;
 
   &.state-working { color: $term-blue; border-color: $state-working; }
-  &.state-planning { color: $state-planning; border-color: $state-planning; }
   &.state-done { color: $term-green; border-color: $state-done; }
   &.state-blocked { color: $term-yellow; border-color: $state-blocked; }
 }
@@ -778,6 +850,88 @@ function closeModal() {
 
 .btn-sm { padding: 4px 9px; font-size: 11px; }
 .btn-xs { padding: 3px 8px; font-size: 11px; }
+.btn-filter-active {
+  background-color: $navy-accent;
+  border-color: $state-working;
+  color: $text-primary;
+}
+
+.detail-filter-panel {
+  padding: 10px 12px;
+  background-color: $bg-input;
+  border: 1px solid $border-strong;
+  border-radius: 4px;
+}
+
+.df-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.df-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.df-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: $text-secondary;
+}
+
+.df-range {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.df-input {
+  flex: 1;
+  min-width: 0;
+  background-color: $bg-surface;
+  border: 1px solid $border-strong;
+  border-radius: 3px;
+  color: $text-primary;
+  padding: 4px 6px;
+  font-size: 11px;
+  outline: none;
+
+  &:focus {
+    border-color: $state-working;
+  }
+}
+
+.df-sep {
+  color: $text-muted;
+  font-size: 11px;
+}
+
+.df-presets {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.preset-chip {
+  padding: 2px 6px;
+  background-color: $bg-elevated;
+  border: 1px solid $border-subtle;
+  border-radius: 3px;
+  color: $text-secondary;
+  font-family: $font-mono;
+  font-size: 10.5px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: $state-working;
+    color: $text-primary;
+  }
+}
+
 .btn-primary { background-color: $navy-accent; border-color: $navy-border; }
 .btn-danger {
   background-color: rgba(225, 29, 72, 0.22);

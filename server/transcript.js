@@ -861,8 +861,7 @@ function analyzeSessionActivity(convId, stat, headText, tailText, manualMapping,
   const isTurnFinished = lastStepType === 'PLANNER_RESPONSE' && !lastPlannerHasTools && lastStepStatus === 'DONE';
 
   if (hasRunningStep || (!isTurnFinished && ageSec <= 40)) {
-    const isPlanningTool = ['update_focus', 'read_file', 'search_web', 'ask_question'].includes(latestToolName);
-    state = isPlanningTool ? 'PLANNING' : 'WORKING';
+    state = 'WORKING';
   } else if (ageSec <= 180) {
     state = isTurnFinished ? 'DONE' : 'WORKING';
   }
@@ -872,7 +871,7 @@ function analyzeSessionActivity(convId, stat, headText, tailText, manualMapping,
   const taskPreview = chosenPrompt ? chosenPrompt.preview : (latestFocus || lastResponsePreview || '-');
 
   let bubbleText = '대기 중';
-  if (state === 'WORKING' || state === 'PLANNING') {
+  if (state === 'WORKING') {
     bubbleText = latestFocus || (latestToolTarget ? `${latestToolName}: ${latestToolTarget}` : '작업 수행 중...');
   } else if (state === 'DONE') {
     bubbleText = latestFocus ? `완료: ${latestFocus}` : (lastResponsePreview ? `완료: ${lastResponsePreview.slice(0, 20)}` : '최근 요청 응답 완료');
@@ -1209,6 +1208,7 @@ function resolveHandoverRuleRef(workspaceNorm, safeRulesSub, agentId, domainPath
  */
 function writeHandoverMarkdownFile({
   agentId,
+  ruleAgentId,
   convId,
   fileSizeMB,
   lastStepIndex,
@@ -1224,9 +1224,24 @@ function writeHandoverMarkdownFile({
 }) {
   const healthLabel = fileSizeMB >= 10 ? '위험' : (fileSizeMB >= 5 ? '주의' : '양호');
   const workspaceNorm = targetWorkspace ? path.resolve(targetWorkspace) : '';
-  const safeRulesSub = (typeof rulesDir === 'string' && rulesDir.trim() && !rulesDir.includes('..'))
+  let effectiveRulesSub = (typeof rulesDir === 'string' && rulesDir.trim() && !rulesDir.includes('..'))
     ? rulesDir.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
     : '.agents/rules';
+  let effectiveAgentId = (typeof ruleAgentId === 'string' && ruleAgentId.trim()) ? ruleAgentId.trim() : agentId;
+
+  // 다중 프로젝트 모드에서 domainPath(<project>/<rulesDir>/<agent>/RULE.md)가 전달되면 실제 하위 규칙 디렉터리를 우선 해석
+  if (workspaceNorm && typeof domainPath === 'string' && domainPath.trim() && !domainPath.includes('..')) {
+    let cleanDomain = domainPath.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+    const wsBasePrefix = `${path.basename(workspaceNorm)}/`;
+    if (cleanDomain.startsWith(wsBasePrefix)) {
+      cleanDomain = cleanDomain.slice(wsBasePrefix.length);
+    }
+    const ruleMatch = cleanDomain.match(/^(.+)\/([^/]+)\/RULE\.md$/i);
+    if (ruleMatch && fs.existsSync(path.join(workspaceNorm, cleanDomain))) {
+      effectiveRulesSub = ruleMatch[1];
+      effectiveAgentId = ruleMatch[2];
+    }
+  }
 
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -1237,50 +1252,44 @@ function writeHandoverMarkdownFile({
   const mm = pad(now.getMinutes());
   const ss = pad(now.getSeconds());
 
-  const dateTag = `${y}${m}${d}`;
-  const timeTag = `${hh}${mm}`;
   const displayDt = `${y}-${m}-${d} ${hh}:${mm}`;
   const displaySec = `${displayDt}:${ss}`;
 
-  const workspaceRulesBase = workspaceNorm ? path.join(workspaceNorm, safeRulesSub) : '';
-  const hasPerAgentRuleDir = Boolean(workspaceRulesBase && fs.existsSync(path.join(workspaceRulesBase, agentId, 'RULE.md')));
-  const relRuleRef = resolveHandoverRuleRef(workspaceNorm, safeRulesSub, agentId, domainPath);
+  const workspaceRulesBase = workspaceNorm ? path.join(workspaceNorm, effectiveRulesSub) : '';
+  const hasPerAgentRuleDir = Boolean(workspaceRulesBase && fs.existsSync(path.join(workspaceRulesBase, effectiveAgentId, 'RULE.md')));
+  const relRuleRef = resolveHandoverRuleRef(workspaceNorm, effectiveRulesSub, effectiveAgentId, domainPath);
 
-  let fileName = '';
-  let filePath = '';
-  let relPath = '';
-  let isExistingRootHandover = false;
+  let targetDir = '';
+  let relDir = '';
 
   if (hasPerAgentRuleDir) {
-    // 회사 다중 에이전트(RULE.md 폴더형) 프로젝트는 기존 handovers 하위 디렉터리 규약 유지
-    const handoverDir = path.join(workspaceRulesBase, agentId, 'handovers');
-    fs.mkdirSync(handoverDir, { recursive: true });
-    fileName = `HANDOVER_${dateTag}_${timeTag}_${agentId}.md`;
-    filePath = path.join(handoverDir, fileName);
-    relPath = `${safeRulesSub}/${agentId}/handovers/${fileName}`;
+    // 다중 에이전트 프로젝트: Rules/Personal/<Agent_Name>/HANDOVER.md
+    targetDir = path.join(workspaceRulesBase, effectiveAgentId);
+    relDir = `${effectiveRulesSub}/${effectiveAgentId}`;
   } else if (workspaceNorm) {
-    // 표준·개인 프로젝트는 대상 프로젝트 루트의 HANDOVER.md로 통일 (기존 파일이 있으면 HANDOVER.draft.md로 안전 보존)
-    const rootHandoverPath = path.join(workspaceNorm, 'HANDOVER.md');
-    isExistingRootHandover = fs.existsSync(rootHandoverPath);
-    fileName = isExistingRootHandover ? 'HANDOVER.draft.md' : 'HANDOVER.md';
-    filePath = path.join(workspaceNorm, fileName);
-    relPath = fileName;
+    // 단일 프로젝트: <workspace>/HANDOVER.md
+    targetDir = workspaceNorm;
+    relDir = '';
   } else {
-    const handoverDir = path.join(fallbackBaseDir, 'handovers', agentId);
-    fs.mkdirSync(handoverDir, { recursive: true });
-    fileName = `HANDOVER_${dateTag}_${timeTag}_${agentId}.md`;
-    filePath = path.join(handoverDir, fileName);
-    relPath = `handovers/${agentId}/${fileName}`;
+    targetDir = path.join(fallbackBaseDir, 'handovers', effectiveAgentId);
+    relDir = `handovers/${effectiveAgentId}`;
   }
+  fs.mkdirSync(targetDir, { recursive: true });
 
-  const bootstrapHandoverPath = (!hasPerAgentRuleDir && workspaceNorm) ? 'HANDOVER.md' : relPath;
+  // 정본 HANDOVER.md 존재 시 덮어쓰지 않고 HANDOVER.draft.md로 임시 생성해 병합 유도
+  const canonicalPath = path.join(targetDir, 'HANDOVER.md');
+  const isExistingHandover = fs.existsSync(canonicalPath);
+  const fileName = isExistingHandover ? 'HANDOVER.draft.md' : 'HANDOVER.md';
+  const filePath = path.join(targetDir, fileName);
+  const relPath = relDir ? `${relDir}/${fileName}` : fileName;
+  const bootstrapHandoverPath = relDir ? `${relDir}/HANDOVER.md` : 'HANDOVER.md';
   const recentReqLines = userPrompts.slice(-5).map((p, idx) => `${idx + 1}. ${p.replace(/\n+/g, ' / ')}`);
   const fileLines = Array.from(modifiedFiles.entries()).slice(-20).map(([p, op]) => `- \`${p}\` (${op})`);
   const cmdLines = commandList.slice(-8).map(c => `- ${c}`);
 
-  const docContent = `# [세션 인수인계서] ${agentId} (${displayDt})
+  const docContent = `# [세션 인수인계서] ${effectiveAgentId} (${displayDt})
 
-- 대상 에이전트: ${agentId}
+- 대상 에이전트: ${effectiveAgentId}
 - 정리 시점 상태: ${healthLabel} (${fileSizeMB} MB / Step ${lastStepIndex.toLocaleString()})
 - 원본 세션 ID: \`${convId}\`
 - 작성 일시: ${displaySec}
@@ -1312,11 +1321,11 @@ ${relRuleRef ? `> - 참조 규칙: \`${relRuleRef}\`\n` : ''}> - 인수인계서
 
   fs.writeFileSync(filePath, docContent, 'utf8');
 
-  const agentRefinePrompt = isExistingRootHandover
+  const agentRefinePrompt = isExistingHandover
     ? [
-        `현재 세션 로그 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 루트 \`HANDOVER.md\`를 최신 상태로 갱신하려 합니다.`,
-        `기존 \`HANDOVER.md\`를 보존하기 위해 새 세션 요약 초안을 \`${relPath}\`에 생성했습니다.`,
-        `- 요청 사항: \`${relPath}\`의 최근 작업 내용과 변경 파일을 검토하여 기존 \`HANDOVER.md\`를 최신 내용으로 병합·갱신한 뒤, 임시 초안 파일(\`${relPath}\`)은 삭제해주세요.`
+        `현재 세션 로그 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 \`${bootstrapHandoverPath}\`를 최신 상태로 갱신하려 합니다.`,
+        `기존 \`${bootstrapHandoverPath}\`를 보존하기 위해 새 세션 요약 초안을 \`${relPath}\`에 생성했습니다.`,
+        `- 요청 사항: \`${relPath}\`의 최근 작업 내용과 변경 파일을 검토하여 기존 \`${bootstrapHandoverPath}\`를 최신 내용으로 병합·갱신한 뒤, 임시 초안 파일(\`${relPath}\`)은 삭제해주세요.`
       ].join('\n')
     : [
         `현재 세션 로그 용량이 ${fileSizeMB} MB(${healthLabel})에 도달하여 세션을 정리하고 새 창으로 이관하려 합니다.`,
@@ -1326,7 +1335,7 @@ ${relRuleRef ? `> - 참조 규칙: \`${relRuleRef}\`\n` : ''}> - 인수인계서
       ].join('\n');
 
   const bootstrapLines = [
-    `너는 ${agentId} 담당 에이전트다.`,
+    `너는 ${effectiveAgentId} 담당 에이전트다.`,
     `먼저 ${relRuleRef ? '아래 규칙 파일과 ' : ''}직전 세션 인수인계서를 읽고 작업 맥락을 확인한 뒤, 인수인계서의 '4. 미완료 작업 및 즉시 이어갈 다음 단계'부터 작업을 이어서 진행해줘.`
   ];
   if (relRuleRef) bootstrapLines.push(`- 참조 규칙: ${relRuleRef}`);
@@ -1335,6 +1344,7 @@ ${relRuleRef ? `> - 참조 규칙: \`${relRuleRef}\`\n` : ''}> - 인수인계서
 
   return {
     agentId,
+    ruleAgentId: effectiveAgentId,
     convId,
     fileName,
     filePath,
@@ -1353,7 +1363,7 @@ ${relRuleRef ? `> - 참조 규칙: \`${relRuleRef}\`\n` : ''}> - 인수인계서
  * @param {Object} params
  * @return {Object}
  */
-function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, domainPath, fallbackBaseDir }) {
+function generateHandoverDocument({ agentId, ruleAgentId, convId, targetWorkspace, rulesDir, domainPath, fallbackBaseDir }) {
   const found = findCliTranscriptPath(convId);
   if (!found) {
     throw new Error('CLI 세션 로그 파일을 찾을 수 없습니다: ' + convId);
@@ -1423,6 +1433,7 @@ function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, 
 
   return writeHandoverMarkdownFile({
     agentId,
+    ruleAgentId,
     convId,
     fileSizeMB,
     lastStepIndex,

@@ -151,13 +151,76 @@
                 {{ msg.isError ? '[ERROR]' : '[RESPONSE]' }}
               </span>
               <span v-if="msg.timestamp" class="turn-time">{{ formatClock(msg.timestamp) }}</span>
+              <template v-if="msg.isError">
+                <button
+                  type="button"
+                  class="inline-toggle-btn"
+                  @click="toggleErrorFriendly(msg.content)"
+                >
+                  {{ isErrorFriendlyVisible(msg.content) ? '원문만 보기' : '쉬운 해석 보기' }}
+                </button>
+                <button
+                  type="button"
+                  class="inline-toggle-btn"
+                  :disabled="isAiExplainLoading(msg.content)"
+                  title="기존 대화 세션을 오염시키지 않는 단발 실행으로 AI 원인 해석 요청"
+                  @click="requestAiExplain(msg.content, '')"
+                >
+                  {{ isAiExplainLoading(msg.content) ? 'AI 해석 중...' : 'AI 원인 해석' }}
+                </button>
+              </template>
               <span v-if="msg.usage" class="msg-token-chip mono">
                 <template v-if="msg.usage.model">{{ msg.usage.model }} · </template>
                 입력 {{ formatTokens(msg.usage.inputTokens) }} · 캐시 {{ formatTokens(msg.usage.cacheReadTokens) }} · 출력 {{ formatTokens(msg.usage.outputTokens) }} (합 {{ formatTokens(msg.usage.totalTokens) }})
               </span>
             </div>
+
+            <!-- 쉬운 해석(사람의 언어) 영역 -->
+            <div v-if="msg.isError && isErrorFriendlyVisible(msg.content)" class="error-friendly-box">
+              <div class="friendly-head">
+                <span class="friendly-title">{{ getErrorInfo(msg.content).ruleHint.title || '오류 안내' }}</span>
+                <span v-if="getErrorInfo(msg.content).aiEntry && getErrorInfo(msg.content).aiEntry.modelUsed" class="friendly-meta mono">
+                  {{ getErrorInfo(msg.content).aiEntry.modelUsed }} · {{ formatTokens(getErrorInfo(msg.content).aiEntry.tokensUsed) }} tok (세션 분리)
+                </span>
+              </div>
+              <div v-if="getErrorInfo(msg.content).ruleHint.summary" class="friendly-summary">
+                {{ getErrorInfo(msg.content).ruleHint.summary }}
+              </div>
+              <div v-if="getErrorInfo(msg.content).ruleHint.action" class="friendly-action">
+                조치: {{ getErrorInfo(msg.content).ruleHint.action }}
+              </div>
+
+              <div v-if="getErrorInfo(msg.content).aiEntry && getErrorInfo(msg.content).aiEntry.loading" class="friendly-loading">
+                경량 모델로 오류 로그를 해석 중입니다 (기존 대화 세션과 분리 실행)...
+              </div>
+              <div v-else-if="getErrorInfo(msg.content).aiEntry && getErrorInfo(msg.content).aiEntry.error" class="friendly-err">
+                해석 실패: {{ getErrorInfo(msg.content).aiEntry.error }}
+              </div>
+              <div v-else-if="getErrorInfo(msg.content).aiEntry && getErrorInfo(msg.content).aiEntry.skippedReason" class="friendly-note">
+                {{ getErrorInfo(msg.content).aiEntry.skippedReason }}
+              </div>
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div
+                v-else-if="getErrorInfo(msg.content).aiEntry && getErrorInfo(msg.content).aiEntry.aiExplanation"
+                class="friendly-ai markdown-body"
+                v-html="renderMarkdownCached(`${msg.id}_ai`, getErrorInfo(msg.content).aiEntry.aiExplanation)"
+              ></div>
+            </div>
+
             <!-- eslint-disable-next-line vue/no-v-html -->
-            <div class="markdown-body" v-html="renderMarkdownCached(msg.id, msg.content)"></div>
+            <div
+              v-if="!msg.isError || !isErrorFriendlyVisible(msg.content) || isRawInsideFriendlyVisible(msg.content)"
+              class="markdown-body"
+              v-html="renderMarkdownCached(msg.id, msg.content)"
+            ></div>
+            <button
+              v-if="msg.isError && isErrorFriendlyVisible(msg.content)"
+              type="button"
+              class="inline-toggle-btn raw-toggle-btn"
+              @click="toggleRawInsideFriendly(msg.content)"
+            >
+              {{ isRawInsideFriendlyVisible(msg.content) ? '원문 로그 숨기기' : '원문 로그 함께 보기' }}
+            </button>
           </div>
         </div>
       </div>
@@ -185,8 +248,48 @@
             </span>
           </div>
 
-          <div v-if="panelData.activeStream.error" class="stream-error">
-            [ERROR] {{ panelData.activeStream.error }}
+          <div v-if="panelData.activeStream.error" class="stream-error-wrap">
+            <div class="stream-error-head">
+              <span class="tag-error">[ERROR]</span>
+              <button
+                type="button"
+                class="inline-toggle-btn"
+                @click="toggleErrorFriendly(panelData.activeStream.error)"
+              >
+                {{ isErrorFriendlyVisible(panelData.activeStream.error) ? '원문만 보기' : '쉬운 해석 보기' }}
+              </button>
+              <button
+                type="button"
+                class="inline-toggle-btn"
+                :disabled="isAiExplainLoading(panelData.activeStream.error)"
+                @click="requestAiExplain(panelData.activeStream.error, panelData.activeStream.commandLine)"
+              >
+                {{ isAiExplainLoading(panelData.activeStream.error) ? 'AI 해석 중...' : 'AI 원인 해석' }}
+              </button>
+            </div>
+            <div v-if="isErrorFriendlyVisible(panelData.activeStream.error)" class="error-friendly-box">
+              <div class="friendly-head">
+                <span class="friendly-title">{{ getErrorInfo(panelData.activeStream.error).ruleHint.title || '오류 안내' }}</span>
+              </div>
+              <div v-if="getErrorInfo(panelData.activeStream.error).ruleHint.summary" class="friendly-summary">
+                {{ getErrorInfo(panelData.activeStream.error).ruleHint.summary }}
+              </div>
+              <div v-if="getErrorInfo(panelData.activeStream.error).ruleHint.action" class="friendly-action">
+                조치: {{ getErrorInfo(panelData.activeStream.error).ruleHint.action }}
+              </div>
+              <div v-if="getErrorInfo(panelData.activeStream.error).aiEntry && getErrorInfo(panelData.activeStream.error).aiEntry.loading" class="friendly-loading">
+                경량 모델로 오류 로그를 해석 중입니다...
+              </div>
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div
+                v-else-if="getErrorInfo(panelData.activeStream.error).aiEntry && getErrorInfo(panelData.activeStream.error).aiEntry.aiExplanation"
+                class="friendly-ai markdown-body"
+                v-html="renderStreamMarkdown(getErrorInfo(panelData.activeStream.error).aiEntry.aiExplanation)"
+              ></div>
+            </div>
+            <div class="stream-error">
+              {{ panelData.activeStream.error }}
+            </div>
           </div>
 
           <!-- eslint-disable-next-line vue/no-v-html -->
@@ -226,13 +329,46 @@
         <span class="c-muted">[{{ log.time }}]</span> {{ log.message }}
       </div>
     </div>
+
+    <!-- 문서·아티팩트(.md 등) 미리보기 모달 -->
+    <BaseModal
+      :visible="filePreview.open"
+      max-width="860px"
+      max-height="86vh"
+      body-gap="0px"
+      @close="closeFilePreview"
+    >
+      <template #header>
+        <div class="file-preview-meta">
+          <span class="file-preview-name">{{ filePreview.name || '문서 미리보기' }}</span>
+          <span v-if="filePreview.path" class="file-preview-path mono" :title="filePreview.path">{{ filePreview.path }}</span>
+        </div>
+      </template>
+      <template #header-actions>
+        <button v-if="filePreview.path" type="button" class="tool-btn" @click="copyPreviewPath">
+          {{ previewCopied ? '복사됨' : '경로 복사' }}
+        </button>
+      </template>
+      <div v-if="filePreview.loading" class="c-muted">문서를 불러오는 중입니다...</div>
+      <div v-else-if="filePreview.error" class="friendly-err">{{ filePreview.error }}</div>
+      <!-- eslint-disable-next-line vue/no-v-html -->
+      <div
+        v-else-if="filePreview.isMarkdown"
+        class="markdown-body"
+        v-html="renderMarkdown(filePreview.content)"
+      ></div>
+      <pre v-else class="file-preview-pre">{{ filePreview.content }}</pre>
+    </BaseModal>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch, nextTick } from 'vue';
+import BaseModal from '@/components/BaseModal.vue';
 import { renderMarkdown } from '@/utils/markdown';
 import { formatTokens, toLocalDateKey, formatPeriodRange } from '@/utils/formatters';
+import { makeErrorKey, translateErrorByRules } from '@/utils/errorHints';
+import { readNumberStorage, writeStorage } from '@/utils/storage';
 
 const props = defineProps({
   panelData: {
@@ -247,16 +383,8 @@ const STORAGE_FONT_SIZE_KEY = 'agent_office_cli_chat_font_size';
 const MIN_FONT_SIZE = 11;
 const MAX_FONT_SIZE = 20;
 
-function readInitialFontSize() {
-  try {
-    const n = Number(localStorage.getItem(STORAGE_FONT_SIZE_KEY));
-    if (Number.isFinite(n) && n >= MIN_FONT_SIZE && n <= MAX_FONT_SIZE) return n;
-  } catch (_) {}
-  return 13;
-}
-
 const activeTab = ref('chat');
-const chatFontSize = ref(readInitialFontSize());
+const chatFontSize = ref(readNumberStorage(STORAGE_FONT_SIZE_KEY, 13, MIN_FONT_SIZE, MAX_FONT_SIZE));
 const chatScrollRef = ref(null);
 const rawScrollRef = ref(null);
 const isPinnedToBottom = ref(true);
@@ -264,14 +392,65 @@ const isPinnedToBottom = ref(true);
 function adjustFontSize(delta) {
   const next = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, chatFontSize.value + delta));
   chatFontSize.value = next;
-  try {
-    localStorage.setItem(STORAGE_FONT_SIZE_KEY, String(next));
-  } catch (_) {}
+  writeStorage(STORAGE_FONT_SIZE_KEY, next);
 }
 
 const expandedUserIds = reactive(new Set());
 const expandedToolIds = reactive(new Set());
+const friendlyToggledErrorKeys = reactive(new Set());
+const rawVisibleInsideFriendlyKeys = reactive(new Set());
 const markdownCache = new Map();
+
+const errorExplainMode = computed(() => props.panelData.errorExplainMode === 'friendly' ? 'friendly' : 'raw');
+
+function getErrorInfo(rawText) {
+  const key = makeErrorKey(rawText);
+  const map = props.panelData.errorExplanations || {};
+  return {
+    key,
+    ruleHint: translateErrorByRules(rawText),
+    aiEntry: map[key] || null
+  };
+}
+
+function isErrorFriendlyVisible(rawText) {
+  const { key, aiEntry } = getErrorInfo(rawText);
+  const hasAiState = Boolean(aiEntry && (aiEntry.loading || aiEntry.aiExplanation || aiEntry.error || aiEntry.skippedReason));
+  if (errorExplainMode.value === 'friendly') {
+    return !friendlyToggledErrorKeys.has(key);
+  }
+  return friendlyToggledErrorKeys.has(key) || hasAiState;
+}
+
+function toggleErrorFriendly(rawText) {
+  const key = makeErrorKey(rawText);
+  if (friendlyToggledErrorKeys.has(key)) friendlyToggledErrorKeys.delete(key);
+  else friendlyToggledErrorKeys.add(key);
+}
+
+function isRawInsideFriendlyVisible(rawText) {
+  return rawVisibleInsideFriendlyKeys.has(makeErrorKey(rawText));
+}
+
+function toggleRawInsideFriendly(rawText) {
+  const key = makeErrorKey(rawText);
+  if (rawVisibleInsideFriendlyKeys.has(key)) rawVisibleInsideFriendlyKeys.delete(key);
+  else rawVisibleInsideFriendlyKeys.add(key);
+}
+
+function isAiExplainLoading(rawText) {
+  const { aiEntry } = getErrorInfo(rawText);
+  return Boolean(aiEntry && aiEntry.loading);
+}
+
+function requestAiExplain(rawText, commandLine) {
+  if (!rawText) return;
+  emitAction('EXPLAIN_ERROR', {
+    errorText: rawText,
+    commandLine: commandLine || '',
+    agentId: props.panelData.agent && props.panelData.agent.id
+  });
+}
 
 /**
  * 상위 레이아웃으로 단일 액션 전달
@@ -362,24 +541,55 @@ function renderStreamMarkdown(text) {
   return renderMarkdown(text);
 }
 
+const filePreview = computed(() => (props.panelData && props.panelData.filePreview) || { open: false });
+const previewCopied = ref(false);
+
+function closeFilePreview() {
+  previewCopied.value = false;
+  emitAction('CLOSE_FILE_PREVIEW');
+}
+
+async function copyPreviewPath() {
+  if (!filePreview.value.path) return;
+  try {
+    await navigator.clipboard.writeText(filePreview.value.path);
+    previewCopied.value = true;
+    setTimeout(() => {
+      previewCopied.value = false;
+    }, 1200);
+  } catch (_) {}
+}
+
 /**
- * 코드블록 복사 버튼 클릭 이벤트 위임
+ * 코드블록 복사 버튼 및 로컬 문서(file://, .md) 링크 클릭 이벤트 위임
  * @author Jangsung
  * @param {MouseEvent} ev
  */
 async function onMarkdownClick(ev) {
   const btn = ev.target && ev.target.closest ? ev.target.closest('.md-code-copy') : null;
-  if (!btn) return;
-  const wrap = btn.closest('.md-code-wrap');
-  const codeEl = wrap ? wrap.querySelector('pre code') : null;
-  if (!codeEl) return;
-  try {
-    await navigator.clipboard.writeText(codeEl.textContent || '');
-    btn.textContent = '복사됨';
-    setTimeout(() => {
-      btn.textContent = '복사';
-    }, 1200);
-  } catch (_) {}
+  if (btn) {
+    const wrap = btn.closest('.md-code-wrap');
+    const codeEl = wrap ? wrap.querySelector('pre code') : null;
+    if (!codeEl) return;
+    try {
+      await navigator.clipboard.writeText(codeEl.textContent || '');
+      btn.textContent = '복사됨';
+      setTimeout(() => {
+        btn.textContent = '복사';
+      }, 1200);
+    } catch (_) {}
+    return;
+  }
+
+  const link = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+  if (!link) return;
+  const href = (link.getAttribute('href') || '').trim();
+  if (!href || href.startsWith('#') || /^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+    return;
+  }
+  ev.preventDefault();
+  const convId = (props.panelData && props.panelData.agent && props.panelData.agent.convId) || '';
+  emitAction('OPEN_FILE_PREVIEW', { path: href, convId });
 }
 
 function onScrollContainer() {
@@ -471,6 +681,30 @@ watch(
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.error-mode-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.error-mode-label {
+  font-size: 10.5px;
+  color: $text-muted;
+  margin-right: 2px;
+}
+
+.mode-btn {
+  padding: 2px 6px;
+  font-size: 10.5px;
+
+  &.is-selected {
+    background-color: $navy-accent;
+    border-color: $navy-border;
+    color: $text-primary;
+  }
 }
 
 .font-ctrl {
@@ -774,11 +1008,91 @@ watch(
   font-weight: 700;
 }
 
+.stream-error-wrap {
+  margin-bottom: 8px;
+}
+
+.stream-error-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  font-family: $font-mono;
+  font-size: 11px;
+}
+
 .stream-error {
   color: $term-danger;
   font-family: $font-mono;
   font-size: 12px;
   margin-bottom: 6px;
+}
+
+.error-friendly-box {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  background-color: $bg-surface;
+  border: 1px solid $border-strong;
+  border-radius: 4px;
+  font-family: $font-sans;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.friendly-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.friendly-title {
+  font-weight: 700;
+  color: $term-yellow;
+}
+
+.friendly-meta {
+  font-size: 10px;
+  color: $text-muted;
+}
+
+.friendly-summary {
+  color: $text-primary;
+  margin-bottom: 3px;
+}
+
+.friendly-action {
+  color: $term-green;
+  font-size: 11.5px;
+}
+
+.friendly-loading {
+  margin-top: 6px;
+  font-size: 11px;
+  color: $term-blue;
+}
+
+.friendly-err {
+  margin-top: 6px;
+  font-size: 11px;
+  color: $term-danger;
+}
+
+.friendly-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: $text-secondary;
+}
+
+.friendly-ai {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid $border-subtle;
+}
+
+.raw-toggle-btn {
+  margin-top: 4px;
 }
 
 .cursor {
@@ -932,4 +1246,45 @@ watch(
 .c-green { color: $term-green; }
 .c-yellow { color: $term-yellow; }
 .c-blue { color: $term-blue; }
+
+:deep(.markdown-body a.local-file-link) {
+  color: $term-blue;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration-style: solid;
+  }
+}
+
+.file-preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.file-preview-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: $text-primary;
+}
+
+.file-preview-path {
+  font-size: 11px;
+  color: $text-muted;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: $font-mono;
+  font-size: 12px;
+  color: $text-secondary;
+}
 </style>

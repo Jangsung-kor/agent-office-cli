@@ -1,17 +1,17 @@
 <template>
-  <div v-if="visible" class="modal-backdrop" @click.self="closeModal">
-    <div class="modal-dialog">
-      <header class="modal-header">
-        <div class="header-left">
-          <span class="modal-title">토큰 사용량 현황 ({{ tokenData.providerLabel || 'CLI' }})</span>
-          <span class="header-sub mono">
-            {{ activePeriodSummaryText }}
-          </span>
-        </div>
-        <button type="button" class="btn btn-sm" @click="closeModal">닫기</button>
-      </header>
-
-      <div class="modal-body">
+  <BaseModal
+    :visible="visible"
+    max-width="1060px"
+    max-height="90vh"
+    body-gap="12px"
+    @close="closeModal"
+  >
+    <template #header>
+      <span class="modal-title">토큰 사용량 현황 ({{ tokenData.providerLabel || 'CLI' }})</span>
+      <span class="header-sub mono">
+        {{ activePeriodSummaryText }}
+      </span>
+    </template>
         <!-- 기간 비교 & 선택 바 -->
         <div class="period-tabs-row">
           <div class="period-tabs">
@@ -129,20 +129,18 @@
             </tbody>
           </table>
         </div>
-      </div>
-
-      <footer class="modal-footer">
-        <span class="footer-note">
-          각 턴의 기록 시각 기준으로 일자별(오늘/7일/30일) 토큰을 분리 집계하며, 최근 80개 스캔 세션 기준입니다.
-        </span>
-        <button type="button" class="btn btn-primary" @click="closeModal">닫기</button>
-      </footer>
-    </div>
-  </div>
+    <template #footer>
+      <span class="footer-note">
+        각 턴의 기록 시각 기준으로 일자별(오늘/7일/30일) 토큰을 분리 집계하며, 최근 80개 스캔 세션 기준입니다.
+      </span>
+      <button type="button" class="btn btn-primary" @click="closeModal">닫기</button>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup>
 import { ref, computed } from 'vue';
+import BaseModal from '@/components/BaseModal.vue';
 import {
   formatTokens,
   toLocalDateKey,
@@ -355,45 +353,6 @@ function closeModal() {
 </script>
 
 <style lang="scss" scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(8, 11, 16, 0.82);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-dialog {
-  width: min(1060px, 95vw);
-  max-height: 90vh;
-  background-color: $bg-surface;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal-header {
-  padding: 12px 16px;
-  background-color: $bg-header;
-  border-bottom: 1px solid $border-subtle;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.header-left {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .modal-title {
   font-size: 14px;
   font-weight: 700;
@@ -403,14 +362,6 @@ function closeModal() {
 .header-sub {
   font-size: 11px;
   color: $term-blue;
-}
-
-.modal-body {
-  padding: 14px 16px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .period-tabs-row {
@@ -640,7 +591,6 @@ function closeModal() {
   color: $text-muted;
 
   &.state-working { color: $term-blue; border-color: $state-working; }
-  &.state-planning { color: $state-planning; border-color: $state-planning; }
   &.state-done { color: $term-green; border-color: $state-done; }
   &.state-blocked { color: $term-yellow; border-color: $state-blocked; }
 }

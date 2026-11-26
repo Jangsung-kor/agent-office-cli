@@ -296,6 +296,8 @@ function scanWorkspaceAgents(targetWorkspace, rulesDir) {
       if (!hasRule) continue; // 실제 규칙(RULE.md)이 있는 유효한 에이전트 폴더만 등록
       result.push({
         id: ent.name,
+        ruleAgentId: ent.name,
+        rulesDir: safeRulesDir,
         name: ent.name,
         role: extractRoleFromRuleFile(ruleFile, ent.name),
         source: 'workspace',
@@ -307,11 +309,13 @@ function scanWorkspaceAgents(targetWorkspace, rulesDir) {
       });
     } else if (ent.isFile() && ent.name.endsWith('.md')) {
       const baseName = ent.name.replace(/\.md$/i, '');
-      if (!isValidAgentId(baseName) || IGNORED_AGENT_IDS.has(baseName.toLowerCase()) || /^readme$/i.test(baseName)) continue;
+      if (!isValidAgentId(baseName) || IGNORED_AGENT_IDS.has(baseName.toLowerCase()) || /^(readme|handover(\.draft)?)$/i.test(baseName)) continue;
       const ruleFile = path.join(absRulesDir, ent.name);
       const relRulePath = `${safeRulesDir}/${ent.name}`;
       result.push({
         id: baseName,
+        ruleAgentId: baseName,
+        rulesDir: safeRulesDir,
         name: baseName,
         role: extractRoleFromRuleFile(ruleFile, baseName),
         source: 'workspace',
@@ -391,6 +395,8 @@ function buildProjectAgentEntry(projectDir, { ruleAgent, rootDoc, wsHistory, rel
     source: hasRuleSource ? 'workspace' : 'cli',
     isLead: false,
     domainPath,
+    rulesDir: ruleAgent && ruleAgent.rulesDir ? ruleAgent.rulesDir : null,
+    ruleAgentId: ruleAgent && (ruleAgent.ruleAgentId || ruleAgent.id) ? (ruleAgent.ruleAgentId || ruleAgent.id) : null,
     hasRuleFile: hasRuleSource,
     workspacePath: resolvedDir,
     workspaceKey: wsKey,
@@ -489,6 +495,8 @@ function scanChildProjectAgents(parentWorkspace, historyIndex) {
         result.push({
           ...ag,
           id: nextId,
+          ruleAgentId: ag.ruleAgentId || ag.id,
+          rulesDir: ag.rulesDir || subRulesDir,
           name: `${relPrefix}/${ag.name}`,
           domainPath: `${relPrefix}/${ag.domainPath}`,
           workspacePath: path.resolve(subPath),

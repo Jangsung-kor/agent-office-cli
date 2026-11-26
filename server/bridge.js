@@ -1,5 +1,6 @@
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const {
   readJsonSafe,
@@ -16,6 +17,7 @@ const {
 const {
   DEFAULT_RULES_DIR,
   isValidAgentId,
+  autoDetectRulesDir,
   resolveWorkspaceAgentsSync,
   resolveWorkspaceAgents,
   updateWorkspaceRulesDir,
@@ -23,6 +25,7 @@ const {
   createWorkspaceAgent,
   removeWorkspaceAgent
 } = require('./agentRegistry');
+const { translateErrorByRules, explainErrorWithProvider } = require('./errorTranslator');
 
 // 기본 포트 3110 사용 (포트 충돌 방지)
 const PORT = Number(process.env.OFFICE_PORT || 3110);
@@ -156,6 +159,44 @@ function setActiveProvider(nextProviderId) {
 }
 
 /**
+ * office_config.json에서 프로바이더별 사용자 지정 계정 라벨 조회
+ * @author Jangsung
+ * @param {String} providerId
+ * @return {String}
+ */
+function readProviderAccountLabel(providerId) {
+  const saved = readJsonSafe(CONFIG_FILE, {});
+  const accounts = saved && typeof saved.providerAccounts === 'object' ? saved.providerAccounts : {};
+  const val = accounts[providerId];
+  return typeof val === 'string' ? val.trim().slice(0, 60) : '';
+}
+
+/**
+ * office_config.json에 프로바이더별 사용자 지정 계정 라벨 저장
+ * @author Jangsung
+ * @param {String} providerId
+ * @param {String} label
+ * @return {String}
+ */
+function saveProviderAccountLabel(providerId, label) {
+  if (!isValidProviderId(providerId)) {
+    throw new Error('지원하지 않는 AI 프로바이더입니다: ' + providerId);
+  }
+  const clean = typeof label === 'string' ? label.trim().slice(0, 60) : '';
+  const saved = readJsonSafe(CONFIG_FILE, {});
+  if (!saved.providerAccounts || typeof saved.providerAccounts !== 'object') {
+    saved.providerAccounts = {};
+  }
+  if (clean) {
+    saved.providerAccounts[providerId] = clean;
+  } else {
+    delete saved.providerAccounts[providerId];
+  }
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(saved, null, 2), 'utf8');
+  return clean;
+}
+
+/**
  * 현재 활성 프로바이더 기준 로스터 탐색 옵션 생성
  * @author Jangsung
  * @param {Object} provider
@@ -235,6 +276,47 @@ function resolveAgentWorkspace(agentId) {
 }
 
 /**
+ * 특정 에이전트의 인수인계서 생성 대상 워크스페이스·규칙 디렉터리·규칙 에이전트 ID 해석
+ * 다중 프로젝트(e:\github 등) 모드에서도 하위 프로젝트(dcim)의 Rules/Personal 경로를 정확히 유지함
+ * @author Jangsung
+ * @param {String} agentId
+ * @param {Object|null} agentSnap
+ * @return {Object}
+ */
+function resolveAgentHandoverMeta(agentId, agentSnap) {
+  const list = (workspaceRoster.activeAgents || []).concat(workspaceRoster.allAgents || []);
+  const def = list.find(a => a && a.id === agentId) || null;
+  const targetWorkspace = resolveAgentWorkspace(agentId);
+  const domainPath = (def && def.domainPath) || (agentSnap && agentSnap.domainPath) || '';
+  let ruleAgentId = (def && def.ruleAgentId) || agentId;
+  let rulesDir = (def && def.rulesDir) || '';
+
+  if (!rulesDir && domainPath && !domainPath.includes('..') && !domainPath.includes('(')) {
+    let clean = String(domainPath).trim().replace(/\\/g, '/').replace(/^\/+/, '');
+    const wsBasePrefix = `${path.basename(path.resolve(targetWorkspace))}/`;
+    if (clean.startsWith(wsBasePrefix)) {
+      clean = clean.slice(wsBasePrefix.length);
+    }
+    const match = clean.match(/^(.+)\/([^/]+)\/RULE\.md$/i);
+    if (match) {
+      rulesDir = match[1];
+      if (!def || !def.ruleAgentId) ruleAgentId = match[2];
+    }
+  }
+
+  if (!rulesDir && path.resolve(targetWorkspace) !== path.resolve(getTargetWorkspace())) {
+    rulesDir = autoDetectRulesDir(targetWorkspace, true) || '';
+  }
+
+  return {
+    targetWorkspace,
+    rulesDir: rulesDir || workspaceRoster.rulesDir,
+    ruleAgentId,
+    domainPath
+  };
+}
+
+/**
  * 세션 중단 시 명시적 상태 파일(office_state*.json)의 RUNNING/WORKING 잔재를 즉시 중단 상태로 전환
  * @author Jangsung
  * @param {String} providerId
@@ -281,7 +363,7 @@ function buildSnapshot(providerId = activeProviderId) {
   const activeAgents = Array.isArray(workspaceRoster.activeAgents) && workspaceRoster.activeAgents.length > 0
     ? workspaceRoster.activeAgents
     : [{ id: 'Master', name: 'Master', role: '팀 총괄 / PM', source: 'preset', isLead: true, domainPath: `${DEFAULT_RULES_DIR}/Master/RULE.md` }];
-  const detectedSessions = provider.scanSessions(runtime.sessionCache, manualMapping, activeAgents);
+  const rawDetectedSessions = provider.scanSessions(runtime.sessionCache, manualMapping, activeAgents);
 
   const runningByConvId = new Map();
   for (const rJob of runtime.runningJobs.values()) {
@@ -291,23 +373,52 @@ function buildSnapshot(providerId = activeProviderId) {
   }
 
   const nowMs = Date.now();
-  // 세션별 중단 이력이 유효한 경우 동적 워커를 포함한 모든 감지 세션의 RUNNING 잔재를 최우선 차단
-  for (const s of detectedSessions) {
-    const abFin = runtime.abortedSessions.get(s.convId);
-    if (abFin && (nowMs - abFin.endedAtMs < 30 * 60 * 1000)) {
-      const abAnchor = abFin.endedAtMs + 5000;
-      if (abAnchor >= s.mtimeMs && (s.state === 'WORKING' || s.state === 'PLANNING')) {
-        const abAgeSec = (nowMs - abFin.endedAtMs) / 1000;
-        s.state = abAgeSec <= 45 ? 'BLOCKED' : 'IDLE';
-        s.bubbleText = abAgeSec <= 45 ? '사용자 요청으로 실행 중단됨' : '대기 중 (이전 실행 중단됨)';
-      }
-    }
-    const rJob = runningByConvId.get(s.convId);
-    if (rJob) {
-      s.state = 'WORKING';
-      s.bubbleText = `[${rJob.modelId}] 실행 중...`;
+  const finishedByConvId = new Map();
+  for (const fJob of runtime.finishedJobs.values()) {
+    if (!fJob || !fJob.convId || (nowMs - fJob.endedAtMs >= 30 * 60 * 1000)) continue;
+    const prev = finishedByConvId.get(fJob.convId);
+    if (!prev || fJob.endedAtMs > prev.endedAtMs) {
+      finishedByConvId.set(fJob.convId, fJob);
     }
   }
+
+  // 세션별 중단·종료 이력이 유효한 경우 캐시 원본 객체를 변이하지 않고 새 세션 스냅샷 배열로 동기화
+  const resolvedSessions = rawDetectedSessions.map(rawSession => {
+    let nextState = rawSession.state;
+    let nextBubble = rawSession.bubbleText;
+
+    const abFin = runtime.abortedSessions.get(rawSession.convId);
+    if (abFin && (nowMs - abFin.endedAtMs < 30 * 60 * 1000)) {
+      const abAnchor = abFin.endedAtMs + 5000;
+      if (abAnchor >= rawSession.mtimeMs && nextState === 'WORKING') {
+        const abAgeSec = (nowMs - abFin.endedAtMs) / 1000;
+        nextState = abAgeSec <= 45 ? 'BLOCKED' : 'IDLE';
+        nextBubble = abAgeSec <= 45 ? '사용자 요청으로 실행 중단됨' : '대기 중 (이전 실행 중단됨)';
+      }
+    } else {
+      const finJob = finishedByConvId.get(rawSession.convId);
+      if (finJob && !finJob.aborted && (finJob.endedAtMs + 2000 >= rawSession.mtimeMs) && nextState === 'WORKING') {
+        const finAgeSec = (nowMs - finJob.endedAtMs) / 1000;
+        nextState = finAgeSec <= 180 ? (finJob.exitCode === 0 ? 'DONE' : 'IDLE') : 'IDLE';
+      }
+    }
+
+    const rJob = runningByConvId.get(rawSession.convId);
+    if (rJob) {
+      nextState = 'WORKING';
+      nextBubble = `[${rJob.modelId}] 실행 중...`;
+    }
+
+    if (nextState === rawSession.state && nextBubble === rawSession.bubbleText) {
+      return rawSession;
+    }
+    return {
+      ...rawSession,
+      state: nextState,
+      bubbleText: nextBubble
+    };
+  });
+  const detectedSessions = resolvedSessions;
 
   const manualConvByAgent = new Map();
   for (const [cId, aId] of Object.entries(manualMapping || {})) {
@@ -385,7 +496,7 @@ function buildSnapshot(providerId = activeProviderId) {
         convId: (cliJob && cliJob.convId) || (matchedSession ? matchedSession.convId : null),
         convOrigin: provider.id,
         cliConvId: resolvedCliConvId,
-        state: cliJob ? 'WORKING' : (exp.state || 'WORKING'),
+        state: cliJob ? 'WORKING' : ((exp.state === 'PLANNING' || exp.state === 'REVIEW') ? 'WORKING' : (exp.state || 'WORKING')),
         bubbleText: cliJob ? `[${cliJob.modelId}] 실행 중...` : (exp.bubbleText || '작업 중'),
         currentTask: exp.currentTask || '-',
         currentTaskSummary: exp.currentTaskSummary || exp.currentTask || '-',
@@ -518,7 +629,7 @@ function buildSnapshot(providerId = activeProviderId) {
   const sessionList = detectedSessions.slice(0, 80).map(s => {
     const meta = sessionMetaMap[s.convId] || {};
     const rJob = runningByConvId.get(s.convId) || null;
-    const isWorking = s.state === 'WORKING' || s.state === 'PLANNING' || Boolean(rJob);
+    const isWorking = s.state === 'WORKING' || Boolean(rJob);
     const u = s.tokenUsage || createEmptyTokenUsage();
     const startedAtIso = s.startedAtIso || u.startedAtIso || s.lastActiveIso || null;
     const durationMs = Number(s.durationMs || u.durationMs || 0);
@@ -616,6 +727,9 @@ function buildSnapshot(providerId = activeProviderId) {
     tokenSummary.durationMs = Math.max(0, maxPeriodMs - minPeriodMs);
   }
 
+  const accountLabel = readProviderAccountLabel(provider.id);
+  const accountInfo = typeof provider.getAccountInfo === 'function' ? provider.getAccountInfo(accountLabel) : null;
+
   return {
     timestamp: new Date().toISOString(),
     bridgeConnected: true,
@@ -625,6 +739,7 @@ function buildSnapshot(providerId = activeProviderId) {
     cliCommand: caps.cliCommand,
     cliLabel: caps.cliLabel,
     capabilities: caps,
+    accountInfo,
     targetWorkspace: getTargetWorkspace(),
     workspaceMode: workspaceRoster.workspaceMode || 'single-project',
     rulesDir: workspaceRoster.rulesDir,
@@ -847,7 +962,10 @@ const server = http.createServer(async (req, res) => {
   // 0. AI 프로바이더 카탈로그 및 활성 백엔드 전환
   if (req.method === 'GET' && urlPath === '/api/providers') {
     try {
-      const providers = await listProvidersSummary(id => getRuntime(id));
+      const providers = await listProvidersSummary(
+        id => getRuntime(id),
+        id => readProviderAccountLabel(id)
+      );
       sendJson(res, 200, {
         ok: true,
         activeProvider: activeProviderId,
@@ -860,6 +978,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && urlPath === '/api/account-label') {
+    try {
+      const body = await readRequestBody(req);
+      const pid = isValidProviderId(body.providerId) ? body.providerId : activeProviderId;
+      const savedLabel = saveProviderAccountLabel(pid, body.label);
+      const targetProvider = getProvider(pid);
+      const accountInfo = typeof targetProvider.refreshAccountInfo === 'function'
+        ? await targetProvider.refreshAccountInfo(savedLabel, true)
+        : (typeof targetProvider.getAccountInfo === 'function' ? targetProvider.getAccountInfo(savedLabel) : null);
+      if (pid === activeProviderId) {
+        broadcastSnapshot();
+      }
+      sendJson(res, 200, { ok: true, providerId: pid, accountInfo });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
   if (req.method === 'POST' && urlPath === '/api/provider') {
     try {
       const body = await readRequestBody(req);
@@ -867,6 +1004,9 @@ const server = http.createServer(async (req, res) => {
       const provider = getActiveProvider();
       await refreshWorkspaceRoster(false);
       const models = await provider.getModels(false);
+      if (typeof provider.refreshAccountInfo === 'function') {
+        await provider.refreshAccountInfo(readProviderAccountLabel(nextId), true);
+      }
       const snap = buildSnapshot(nextId);
       cachedSnapshot = snap;
       broadcastSseEvent('state', snap);
@@ -1213,8 +1353,10 @@ const server = http.createServer(async (req, res) => {
         if (logs.length > 30) logs.shift();
       }
 
+      const rawNextState = state || prev.state || 'WORKING';
+      const normalizedState = (rawNextState === 'PLANNING' || rawNextState === 'REVIEW') ? 'WORKING' : rawNextState;
       data.agents[agentId] = {
-        state: state || prev.state || 'WORKING',
+        state: normalizedState,
         bubbleText: bubbleText || prev.bubbleText || '작업 중',
         currentTask: currentTask || prev.currentTask || '-',
         currentTool: currentTool || prev.currentTool || '-',
@@ -1246,12 +1388,14 @@ const server = http.createServer(async (req, res) => {
       if (!targetConvId) {
         throw new Error(`${agentId}에 연결된 CLI 세션이 없습니다.`);
       }
+      const handoverTarget = resolveAgentHandoverMeta(agentId, agentSnap);
       const result = provider.generateHandover({
         agentId,
+        ruleAgentId: handoverTarget.ruleAgentId,
         convId: targetConvId,
-        targetWorkspace: resolveAgentWorkspace(agentId),
-        rulesDir: workspaceRoster.rulesDir,
-        domainPath: (agentSnap && agentSnap.domainPath) || '',
+        targetWorkspace: handoverTarget.targetWorkspace,
+        rulesDir: handoverTarget.rulesDir,
+        domainPath: handoverTarget.domainPath,
         fallbackBaseDir: PROJECT_ROOT
       });
       sendJson(res, 200, { ok: true, ...result });
@@ -1295,7 +1439,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { ok: false, error: `${agentId}에서 이미 프롬프트 작업이 실행 중입니다.` });
         return;
       }
-      if (!createNew && agentSnap && (agentSnap.state === 'WORKING' || agentSnap.state === 'PLANNING')) {
+      if (!createNew && agentSnap && agentSnap.state === 'WORKING') {
         sendJson(res, 409, { ok: false, error: `${agentId} 세션이 현재 작업 중(${agentSnap.state})입니다. 완료 후 전달하세요.` });
         return;
       }
@@ -1387,6 +1531,140 @@ const server = http.createServer(async (req, res) => {
       syncAbortedExplicitState(provider.id, agentId);
       broadcastSnapshot();
       sendJson(res, 200, { ok: true, providerId: provider.id, agentId, convId: activeConvId });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // 10-2. CLI 오류 원문 해석 (0토큰 규칙 해석 + 세션 격리 단발 AI 해석)
+  if (req.method === 'POST' && urlPath === '/api/error/explain') {
+    try {
+      const body = await readRequestBody(req);
+      const errorText = typeof body.errorText === 'string' ? body.errorText.trim() : '';
+      const commandLine = typeof body.commandLine === 'string' ? body.commandLine.trim() : '';
+      const mode = body.mode === 'rule' ? 'rule' : 'ai';
+      const agentId = isValidAgentId(body.agentId) ? body.agentId : 'Master';
+      if (!errorText) {
+        sendJson(res, 400, { ok: false, error: '해석할 오류 로그가 비어 있습니다.' });
+        return;
+      }
+
+      const ruleHint = translateErrorByRules(errorText);
+      if (mode === 'rule') {
+        sendJson(res, 200, { ok: true, mode: 'rule', ruleHint, aiExplanation: null });
+        return;
+      }
+
+      if (!ruleHint.aiExplainable) {
+        sendJson(res, 200, {
+          ok: true,
+          mode: 'rule_fallback',
+          ruleHint,
+          aiExplanation: null,
+          skippedReason: '인증·쿼터·네트워크·세션 만료 오류는 추가 AI 호출 없이 1차 규칙 안내로 대체했습니다.'
+        });
+        return;
+      }
+
+      const provider = getActiveProvider();
+      const explained = await explainErrorWithProvider({
+        provider,
+        errorText,
+        commandLine,
+        cwd: resolveAgentWorkspace(agentId)
+      });
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'ai',
+        ruleHint,
+        modelUsed: explained.modelUsed,
+        tokensUsed: explained.tokensUsed,
+        aiExplanation: explained.aiExplanation
+      });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // 10-1. 허용 경로 내 문서/텍스트 파일 안전 조회 (아티팩트·마크다운 미리보기용)
+  if (req.method === 'GET' && urlPath === '/api/file') {
+    try {
+      const reqUrl = new URL(req.url, 'http://127.0.0.1');
+      let rawPath = (reqUrl.searchParams.get('path') || '').trim();
+      const convId = (reqUrl.searchParams.get('convId') || '').trim();
+      if (!rawPath) {
+        sendJson(res, 400, { ok: false, error: '조회할 파일 경로(path)가 비어 있습니다.' });
+        return;
+      }
+
+      rawPath = rawPath.split('#')[0];
+      if (rawPath.startsWith('file:///')) {
+        rawPath = decodeURIComponent(rawPath.slice(8));
+        if (process.platform !== 'win32' && !rawPath.startsWith('/')) {
+          rawPath = '/' + rawPath;
+        }
+      } else if (rawPath.startsWith('file://')) {
+        rawPath = decodeURIComponent(rawPath.slice(7));
+      }
+
+      const baseWorkspace = path.resolve(workspaceRoster.targetWorkspace || PROJECT_ROOT);
+      const allowedRoots = [
+        baseWorkspace,
+        path.resolve(os.homedir(), '.gemini', 'antigravity-cli', 'brain'),
+        path.resolve(os.homedir(), '.gemini', 'antigravity', 'brain')
+      ];
+
+      const isUnderAllowedRoot = candidate => {
+        const resolved = path.resolve(candidate);
+        const cmpResolved = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+        return allowedRoots.some(root => {
+          const cmpRoot = process.platform === 'win32' ? root.toLowerCase() : root;
+          return cmpResolved === cmpRoot || cmpResolved.startsWith(cmpRoot + path.sep);
+        });
+      };
+
+      let targetPath = null;
+      if (path.isAbsolute(rawPath)) {
+        targetPath = path.resolve(rawPath);
+      } else {
+        const cleanRel = rawPath.replace(/^[/\\]+/, '');
+        const candidates = [];
+        if (convId && !convId.includes('..') && !convId.includes('/') && !convId.includes('\\')) {
+          candidates.push(path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain', convId, cleanRel));
+          candidates.push(path.join(os.homedir(), '.gemini', 'antigravity', 'brain', convId, cleanRel));
+        }
+        candidates.push(path.join(baseWorkspace, cleanRel));
+        targetPath = candidates.find(c => isUnderAllowedRoot(c) && fs.existsSync(c)) || candidates[candidates.length - 1];
+      }
+
+      if (!isUnderAllowedRoot(targetPath)) {
+        sendJson(res, 403, { ok: false, error: '허용된 작업 폴더 및 세션 아티팩트 경로 밖의 파일은 조회할 수 없습니다.' });
+        return;
+      }
+      if (!fs.existsSync(targetPath)) {
+        sendJson(res, 404, { ok: false, error: `파일을 찾을 수 없습니다: ${targetPath}` });
+        return;
+      }
+      const stat = fs.statSync(targetPath);
+      if (!stat.isFile()) {
+        sendJson(res, 400, { ok: false, error: '디렉터리가 아닌 파일만 조회할 수 있습니다.' });
+        return;
+      }
+      if (stat.size > 512 * 1024) {
+        sendJson(res, 413, { ok: false, error: '512KB를 초과하는 파일은 미리보기를 지원하지 않습니다.' });
+        return;
+      }
+
+      const content = fs.readFileSync(targetPath, 'utf8');
+      sendJson(res, 200, {
+        ok: true,
+        path: targetPath,
+        name: path.basename(targetPath),
+        size: stat.size,
+        content
+      });
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });
     }

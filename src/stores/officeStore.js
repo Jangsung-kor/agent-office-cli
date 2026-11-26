@@ -1,9 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { assignAgentSeats, resolveDynamicWorkers, isLoungeState } from '@/constants/officeLayout';
+import { makeErrorKey, translateErrorByRules } from '@/utils/errorHints';
+import { readJsonResponse } from '@/utils/http';
+import { readStorage, writeStorage } from '@/utils/storage';
 
 const EXPECTED_BRIDGE_VERSION = '2026-11-25-cli-v4';
 const STORAGE_PROVIDER_SESSION_KEY = 'agent_office_selected_provider';
+const STORAGE_ERROR_MODE_KEY = 'agent_office_cli_error_explain_mode';
 
 const DEFAULT_CAPABILITIES_MAP = {
   antigravity: {
@@ -98,52 +102,19 @@ function readProviderPref(providerId, key, fallback) {
 }
 
 function saveProviderPref(providerId, key, value) {
-  try {
-    localStorage.setItem(`agent_office_${providerId}_${key}`, value);
-  } catch (_) {}
+  writeStorage(`agent_office_${providerId}_${key}`, value);
 }
 
-/**
- * fetch 응답을 안전하게 JSON으로 파싱 (구버전 브리지의 404/HTML 폴백 시 원인 안내)
- * @author Jangsung
- * @param {Response} res
- * @param {String} fallbackLabel
- * @return {Promise<Object>}
- */
-async function readJsonResponse(res, fallbackLabel = 'API 요청') {
-  const rawText = await res.text();
-  if (rawText) {
-    try {
-      const parsed = JSON.parse(rawText);
-      if (parsed && typeof parsed === 'object') {
-        if (
-          res.status === 404
-          && typeof parsed.error === 'string'
-          && parsed.error.startsWith('지원하지 않는 API 경로입니다:')
-        ) {
-          throw new Error(
-            `${fallbackLabel} 실패: 구버전 브리지 서버가 실행 중입니다. 실행 중인 yarn.cmd dev 또는 yarn.cmd bridge를 재시작하세요.`
-          );
-        }
-        return parsed;
-      }
-    } catch (err) {
-      if (err && err.message && err.message.includes('구버전 브리지 서버')) {
-        throw err;
-      }
-    }
-  }
-  const trimmed = rawText.trim();
-  const looksOutdatedBridge = res.status === 404
-    || trimmed === 'Not Found'
-    || trimmed.startsWith('<!DOCTYPE')
-    || trimmed.startsWith('<html');
-  if (looksOutdatedBridge) {
-    throw new Error(
-      `${fallbackLabel} 실패 (HTTP ${res.status}): 구버전 브리지 서버가 실행 중이거나 API 경로가 없습니다. 실행 중인 yarn.cmd dev 또는 yarn.cmd bridge를 재시작하세요.`
-    );
-  }
-  throw new Error(`${fallbackLabel} 실패 (HTTP ${res.status}): 유효한 JSON 응답이 아닙니다.`);
+function createEmptyFilePreview() {
+  return {
+    open: false,
+    loading: false,
+    name: '',
+    path: '',
+    content: '',
+    isMarkdown: false,
+    error: ''
+  };
 }
 
 function buildPrefsForProvider(providerId, capabilities) {
@@ -177,6 +148,7 @@ export const useOfficeStore = defineStore('office', () => {
   const providerCapabilities = ref({
     ...(DEFAULT_CAPABILITIES_MAP[activeProvider.value] || DEFAULT_CAPABILITIES_MAP.antigravity)
   });
+  const accountInfo = ref(null);
 
   const targetWorkspace = ref('');
   const workspaceMode = ref('single-project');
@@ -204,7 +176,6 @@ export const useOfficeStore = defineStore('office', () => {
 
   const selectedAgentId = ref('Master');
   const hoveredAgentId = ref(null);
-  const meetingActive = ref(false);
   const packets = ref([]);
 
   const activeSessionMessages = ref([]);
@@ -218,6 +189,9 @@ export const useOfficeStore = defineStore('office', () => {
   const handoverResult = ref(null);
   const handoverLoading = ref(false);
   const lastError = ref('');
+  const errorExplainMode = ref(readStorage(STORAGE_ERROR_MODE_KEY, 'raw') === 'friendly' ? 'friendly' : 'raw');
+  const errorExplanations = ref({});
+  const filePreview = ref(createEmptyFilePreview());
 
   let eventSource = null;
 
@@ -232,12 +206,10 @@ export const useOfficeStore = defineStore('office', () => {
       if (ag && ag.convId) assignedConvIds.add(ag.convId);
     }
 
-    const baseList = assignAgentSeats(baseMap, meetingActive.value);
+    const baseList = assignAgentSeats(baseMap);
 
     const dynamicWorkers = resolveDynamicWorkers(sessions.value, assignedConvIds).map(w => {
-      const pos = meetingActive.value
-        ? w.meetingSeat
-        : (isLoungeState(w.state) ? w.lounge : w.desk);
+      const pos = isLoungeState(w.state) ? w.lounge : w.desk;
       return {
         ...w,
         targetX: pos.x,
@@ -257,7 +229,7 @@ export const useOfficeStore = defineStore('office', () => {
 
   const pipelineStats = computed(() => {
     const base = officeAgents.value.filter(a => !a.isDynamicWorker);
-    const activeCount = base.filter(a => a.state === 'WORKING' || a.state === 'PLANNING' || a.state === 'REVIEW').length;
+    const activeCount = base.filter(a => a.state === 'WORKING').length;
     const doneCount = base.filter(a => a.state === 'DONE').length;
     return {
       total: base.length,
@@ -451,6 +423,9 @@ export const useOfficeStore = defineStore('office', () => {
     } else if (DEFAULT_CAPABILITIES_MAP[nextProviderId]) {
       providerCapabilities.value = { ...DEFAULT_CAPABILITIES_MAP[nextProviderId] };
     }
+    if (snap.accountInfo !== undefined) {
+      accountInfo.value = snap.accountInfo;
+    }
 
     if (providerChanged) {
       promptPrefs.value = buildPrefsForProvider(nextProviderId, providerCapabilities.value);
@@ -597,6 +572,16 @@ export const useOfficeStore = defineStore('office', () => {
         }
         if (data.error) {
           lastError.value = data.error;
+          if (errorExplainMode.value === 'friendly' && translateErrorByRules(data.error).aiExplainable) {
+            dispatchAction({
+              type: 'EXPLAIN_ERROR',
+              payload: {
+                errorText: data.error,
+                commandLine: data.commandLine || '',
+                agentId: data.agentId
+              }
+            });
+          }
         }
         const targetConvId = data.convId || (agents.value[data.agentId] && agents.value[data.agentId].convId);
         const finalizeClear = () => {
@@ -730,8 +715,22 @@ export const useOfficeStore = defineStore('office', () => {
         hoveredAgentId.value = (payload && payload.agentId) || null;
         break;
       }
-      case 'CALL_ALL_MEETING': {
-        meetingActive.value = !meetingActive.value;
+      case 'UPDATE_ACCOUNT_LABEL': {
+        const pid = (payload && payload.providerId) || activeProvider.value;
+        const res = await fetch('/api/account-label', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            providerId: pid,
+            label: (payload && payload.label) || ''
+          })
+        });
+        const data = await readJsonResponse(res, '접속 계정 라벨 저장');
+        if (!res.ok || !data.ok) {
+          lastError.value = data.error || '접속 계정 라벨 저장 실패';
+        } else if (data.accountInfo && pid === activeProvider.value) {
+          accountInfo.value = data.accountInfo;
+        }
         break;
       }
       case 'CONSUME_PACKETS': {
@@ -791,6 +790,77 @@ export const useOfficeStore = defineStore('office', () => {
       }
       case 'OPEN_SESSION_MODAL': {
         activeModal.value = 'sessionManager';
+        break;
+      }
+      case 'SET_ERROR_EXPLAIN_MODE': {
+        const nextMode = payload && payload.mode === 'friendly' ? 'friendly' : 'raw';
+        errorExplainMode.value = nextMode;
+        try {
+          localStorage.setItem(STORAGE_ERROR_MODE_KEY, nextMode);
+        } catch (_) {}
+        break;
+      }
+      case 'EXPLAIN_ERROR': {
+        const errorText = typeof (payload && payload.errorText) === 'string' ? payload.errorText.trim() : '';
+        if (!errorText) break;
+        const key = makeErrorKey(errorText);
+        const existing = errorExplanations.value[key];
+        if (existing && (existing.loading || existing.aiExplanation || existing.mode === 'rule_fallback')) {
+          break;
+        }
+        const ruleHint = translateErrorByRules(errorText);
+        errorExplanations.value = {
+          ...errorExplanations.value,
+          [key]: { loading: true, ruleHint, aiExplanation: '', modelUsed: '', tokensUsed: 0, error: '' }
+        };
+        try {
+          const res = await fetch('/api/error/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              errorText,
+              commandLine: (payload && payload.commandLine) || '',
+              agentId: (payload && payload.agentId) || selectedAgentId.value,
+              mode: 'ai'
+            })
+          });
+          const data = await readJsonResponse(res, '오류 원인 해석');
+          if (!res.ok || !data.ok) {
+            errorExplanations.value = {
+              ...errorExplanations.value,
+              [key]: {
+                loading: false,
+                ruleHint,
+                aiExplanation: '',
+                error: data.error || '오류 해석 요청 실패'
+              }
+            };
+          } else {
+            errorExplanations.value = {
+              ...errorExplanations.value,
+              [key]: {
+                loading: false,
+                mode: data.mode || 'ai',
+                ruleHint: data.ruleHint || ruleHint,
+                modelUsed: data.modelUsed || '',
+                tokensUsed: Number(data.tokensUsed || 0),
+                aiExplanation: data.aiExplanation || '',
+                skippedReason: data.skippedReason || '',
+                error: ''
+              }
+            };
+          }
+        } catch (err) {
+          errorExplanations.value = {
+            ...errorExplanations.value,
+            [key]: {
+              loading: false,
+              ruleHint,
+              aiExplanation: '',
+              error: err.message || '오류 해석 중 네트워크 오류'
+            }
+          };
+        }
         break;
       }
       case 'UPDATE_SESSION_META': {
@@ -1059,6 +1129,56 @@ export const useOfficeStore = defineStore('office', () => {
         }
         break;
       }
+      case 'OPEN_FILE_PREVIEW': {
+        const cleanHref = String((payload && payload.path) || '').trim();
+        if (!cleanHref) break;
+        const convId = String((payload && payload.convId) || (selectedAgent.value && selectedAgent.value.convId) || '').trim();
+        const fallbackName = cleanHref.split(/[\\/]/).pop().split('#')[0] || '문서 미리보기';
+        filePreview.value = {
+          open: true,
+          loading: true,
+          name: fallbackName,
+          path: '',
+          content: '',
+          isMarkdown: /\.(md|markdown)(#.*)?$/i.test(cleanHref),
+          error: ''
+        };
+        try {
+          const res = await fetch(
+            `/api/file?path=${encodeURIComponent(cleanHref)}&convId=${encodeURIComponent(convId)}`
+          );
+          const data = await readJsonResponse(res, '문서 미리보기');
+          if (!res.ok || !data.ok) {
+            filePreview.value = {
+              ...filePreview.value,
+              loading: false,
+              error: (data && data.error) || `문서를 불러오지 못했습니다 (HTTP ${res.status}).`
+            };
+          } else {
+            const resolvedName = data.name || fallbackName;
+            filePreview.value = {
+              open: true,
+              loading: false,
+              name: resolvedName,
+              path: data.path || cleanHref,
+              content: data.content || '',
+              isMarkdown: /\.(md|markdown)$/i.test(resolvedName),
+              error: ''
+            };
+          }
+        } catch (err) {
+          filePreview.value = {
+            ...filePreview.value,
+            loading: false,
+            error: (err && err.message) || '문서 조회 중 네트워크 오류가 발생했습니다.'
+          };
+        }
+        break;
+      }
+      case 'CLOSE_FILE_PREVIEW': {
+        filePreview.value = createEmptyFilePreview();
+        break;
+      }
       default:
         break;
       }
@@ -1077,6 +1197,7 @@ export const useOfficeStore = defineStore('office', () => {
     providerSwitchingId,
     showProviderSelector,
     providerCapabilities,
+    accountInfo,
     targetWorkspace,
     workspaceMode,
     rulesDir,
@@ -1094,7 +1215,6 @@ export const useOfficeStore = defineStore('office', () => {
     selectedAgentId,
     selectedAgent,
     hoveredAgentId,
-    meetingActive,
     packets,
     pipelineStats,
     activeSessionMessages,
@@ -1108,6 +1228,9 @@ export const useOfficeStore = defineStore('office', () => {
     handoverResult,
     handoverLoading,
     lastError,
+    errorExplainMode,
+    errorExplanations,
+    filePreview,
     fetchInitialData,
     connectStream,
     disconnectStream,

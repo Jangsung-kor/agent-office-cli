@@ -12,19 +12,19 @@
 
         <div class="workspace-strip">
           <span class="ws-tag">WORKSPACE</span>
-          <span class="ws-path">{{ targetWorkspace || '-' }}</span>
+          <span class="ws-path">{{ screenData.targetWorkspace || '-' }}</span>
           <button
             type="button"
             class="btn btn-sm"
-            :disabled="loading || Boolean(switchingId)"
+            :disabled="screenData.loading || Boolean(screenData.switchingId)"
             @click="emitAction('FETCH_PROVIDERS')"
           >
-            {{ loading ? '감지 중...' : 'CLI 상태 새로고침' }}
+            {{ screenData.loading ? '감지 중...' : 'CLI 상태 새로고침' }}
           </button>
         </div>
       </header>
 
-      <div v-if="error" class="error-banner">{{ error }}</div>
+      <div v-if="screenData.error" class="error-banner">{{ screenData.error }}</div>
 
       <section class="cards-grid" aria-label="AI 백엔드 선택 카드">
         <article
@@ -33,8 +33,8 @@
           :class="[
             'provider-card',
             {
-              'is-active': p.providerId === activeProvider,
-              'is-switching': switchingId === p.providerId,
+              'is-active': p.providerId === screenData.activeProvider,
+              'is-switching': screenData.switchingId === p.providerId,
               'is-unavailable': !p.available
             }
           ]"
@@ -62,6 +62,12 @@
               <dd class="mono">{{ p.cliCommand }}</dd>
             </div>
             <div class="spec-row">
+              <dt>접속 계정</dt>
+              <dd class="mono path-dd" :title="(p.accountInfo && p.accountInfo.note) || ''">
+                {{ (p.accountInfo && p.accountInfo.displayLabel) || (p.available ? '계정 상태 확인 중' : 'CLI 미감지') }}
+              </dd>
+            </div>
+            <div class="spec-row">
               <dt>감지 경로</dt>
               <dd class="mono path-dd" :title="p.binPath">{{ p.binPath || '-' }}</dd>
             </div>
@@ -87,10 +93,10 @@
             <button
               type="button"
               class="enter-btn"
-              :disabled="Boolean(switchingId)"
+              :disabled="Boolean(screenData.switchingId)"
               @click="selectProvider(p.providerId)"
             >
-              {{ switchingId === p.providerId ? `${p.name} 백엔드 연결 중...` : `${p.name} 백엔드로 오피스 열기` }}
+              {{ screenData.switchingId === p.providerId ? `${p.name} 백엔드 연결 중...` : `${p.name} 백엔드로 오피스 열기` }}
             </button>
           </div>
         </article>
@@ -107,29 +113,9 @@
 import { computed } from 'vue';
 
 const props = defineProps({
-  providers: {
-    type: Array,
-    default: () => []
-  },
-  activeProvider: {
-    type: String,
-    default: 'antigravity'
-  },
-  targetWorkspace: {
-    type: String,
-    default: ''
-  },
-  loading: {
-    type: Boolean,
-    default: false
-  },
-  switchingId: {
-    type: String,
-    default: ''
-  },
-  error: {
-    type: String,
-    default: ''
+  screenData: {
+    type: Object,
+    required: true
   }
 });
 
@@ -169,8 +155,8 @@ const FALLBACK_CARDS = [
 ];
 
 const displayProviders = computed(() =>
-  Array.isArray(props.providers) && props.providers.length > 0
-    ? props.providers
+  Array.isArray(props.screenData.providers) && props.screenData.providers.length > 0
+    ? props.screenData.providers
     : FALLBACK_CARDS
 );
 
@@ -184,7 +170,7 @@ function emitAction(type, payload) {
 }
 
 function selectProvider(providerId) {
-  if (props.switchingId) return;
+  if (props.screenData.switchingId) return;
   emitAction('SELECT_PROVIDER', { providerId });
 }
 </script>

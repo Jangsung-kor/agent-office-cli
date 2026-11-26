@@ -83,10 +83,35 @@ function normalizePromptOptions({ modelId, effort, mode }) {
   return { modelId: safeModel, effort: safeEffort, mode: safeMode };
 }
 
+/**
+ * Antigravity CLI 계정 상태 조회 (OS 키링 기반 인증 특성상 비대화형 이메일 조회는 미지원)
+ * @author Jangsung
+ * @param {String} customLabel
+ * @return {Object}
+ */
+function getAccountInfo(customLabel = '') {
+  const cli = detectCli();
+  const cleanLabel = typeof customLabel === 'string' ? customLabel.trim().slice(0, 60) : '';
+  return {
+    providerId: PROVIDER_ID,
+    authenticated: cli.available,
+    autoDetected: false,
+    supportsAutoDetect: false,
+    detectedEmail: '',
+    authMethod: 'OS Keyring (Google OAuth)',
+    plan: '',
+    customLabel: cleanLabel,
+    displayLabel: cleanLabel || (cli.available ? 'OS 키링 인증 (라벨 미지정)' : 'CLI 미감지'),
+    note: 'agy CLI는 OAuth 자격증명을 OS 키링에 보관하며 비대화형 계정 이메일 조회를 지원하지 않습니다. 터미널에서 agy 실행 후 /config 또는 /logout으로 계정을 확인·전환할 수 있습니다.'
+  };
+}
+
 module.exports = {
   id: PROVIDER_ID,
   getCapabilities: () => ({ ...CAPABILITIES, sessionStoreDir: getCliBrainDir() }),
   detectCli,
+  getAccountInfo,
+  refreshAccountInfo: async (customLabel = '') => getAccountInfo(customLabel),
   getSessionStoreDir: getCliBrainDir,
   readHistoryIndex: readCliHistoryIndex,
   getModels: getAvailableModels,

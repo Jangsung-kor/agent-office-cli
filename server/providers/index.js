@@ -37,7 +37,7 @@ function getProvider(providerId) {
  * @param {Function} getRuntimeForProvider
  * @return {Promise<Array<Object>>}
  */
-async function listProvidersSummary(getRuntimeForProvider) {
+async function listProvidersSummary(getRuntimeForProvider, getAccountLabelForProvider) {
   const results = [];
   for (const id of PROVIDER_ORDER) {
     const provider = PROVIDERS[id];
@@ -47,12 +47,17 @@ async function listProvidersSummary(getRuntimeForProvider) {
     const cacheMap = runtime && runtime.sessionCache ? runtime.sessionCache : new Map();
     const sessions = provider.scanSessions(cacheMap, {}, []);
     const models = await provider.getModels(false);
+    const customLabel = typeof getAccountLabelForProvider === 'function' ? getAccountLabelForProvider(id) : '';
+    const accountInfo = typeof provider.refreshAccountInfo === 'function'
+      ? await provider.refreshAccountInfo(customLabel, false)
+      : (typeof provider.getAccountInfo === 'function' ? provider.getAccountInfo(customLabel) : null);
 
     results.push({
       ...caps,
       available: cli.available,
       binPath: cli.binPath,
       sessionStoreDir: cli.sessionStoreDir,
+      accountInfo,
       sessionCount: sessions.length,
       runningCount: runtime && runtime.runningJobs ? runtime.runningJobs.size : 0,
       modelCount: Array.isArray(models) ? models.length : 0,

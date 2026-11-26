@@ -24,6 +24,64 @@
         <span class="provider-change">변경</span>
       </button>
 
+      <div ref="accountWrapRef" class="account-wrap">
+        <button
+          type="button"
+          :class="['account-pill', { 'is-active': showAccountPopover }]"
+          :title="accountTooltip"
+          @click="toggleAccountPopover"
+        >
+          <span class="account-tag">계정</span>
+          <span class="account-val">{{ accountShortLabel }}</span>
+        </button>
+
+        <div v-if="showAccountPopover" class="account-popover">
+          <div class="pop-head">
+            <span>접속 계정 상태 ({{ hudInfo.providerName || 'ANTIGRAVITY' }})</span>
+            <button type="button" class="pop-close" @click="showAccountPopover = false">닫기</button>
+          </div>
+          <div class="pop-meta-row">
+            <span class="pop-key">인증 방식</span>
+            <span class="pop-val mono">{{ (hudInfo.accountInfo && hudInfo.accountInfo.authMethod) || '-' }}</span>
+          </div>
+          <div v-if="hudInfo.accountInfo && hudInfo.accountInfo.detectedEmail" class="pop-meta-row">
+            <span class="pop-key">감지 이메일</span>
+            <span class="pop-val mono">{{ hudInfo.accountInfo.detectedEmail }}</span>
+          </div>
+          <div v-if="hudInfo.accountInfo && hudInfo.accountInfo.plan" class="pop-meta-row">
+            <span class="pop-key">플랜</span>
+            <span class="pop-val mono">{{ hudInfo.accountInfo.plan }}</span>
+          </div>
+          <div v-if="hudInfo.accountInfo && hudInfo.accountInfo.note" class="pop-note">
+            {{ hudInfo.accountInfo.note }}
+          </div>
+          <div class="pop-label-form">
+            <label class="pop-form-label" for="accountLabelInput">표시용 계정 메모 (구분용 · 인증 키 입력 아님)</label>
+            <div class="pop-form-row">
+              <input
+                id="accountLabelInput"
+                v-model="accountLabelDraft"
+                type="text"
+                class="pop-input"
+                maxlength="60"
+                placeholder="예: 회사 Google (name@company.com)"
+                @keydown.enter="saveAccountLabel"
+                @keydown.escape="showAccountPopover = false"
+              />
+              <button type="button" class="btn btn-sm btn-primary" @click="saveAccountLabel">저장</button>
+              <button
+                v-if="hudInfo.accountInfo && hudInfo.accountInfo.customLabel"
+                type="button"
+                class="btn btn-sm"
+                @click="clearAccountLabel"
+              >
+                초기화
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <span :class="['live-pill', hudInfo.bridgeConnected ? 'is-online' : 'is-offline']">
         <span class="live-dot"></span>
         <span>{{ hudInfo.bridgeConnected ? 'LIVE: ON' : '연결 대기' }}</span>
@@ -65,14 +123,6 @@
 
       <button
         type="button"
-        :class="['btn', 'btn-sm', { 'btn-active': hudInfo.meetingActive }]"
-        @click="emitAction('CALL_ALL_MEETING')"
-      >
-        {{ hudInfo.meetingActive ? '자리 복귀' : '회의 소집' }}
-      </button>
-
-      <button
-        type="button"
         :class="['btn', 'btn-sm', { 'btn-active': !hudInfo.canvasCollapsed }]"
         @click="emitAction('TOGGLE_CANVAS')"
       >
@@ -83,7 +133,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { formatTokens, formatPeriodRange } from '@/utils/formatters';
 
 const props = defineProps({
@@ -96,6 +146,30 @@ const props = defineProps({
 const emit = defineEmits(['action']);
 
 const workspaceDraft = ref(props.hudInfo.targetWorkspace || '');
+const accountWrapRef = ref(null);
+const showAccountPopover = ref(false);
+const accountLabelDraft = ref('');
+
+const accountShortLabel = computed(() => {
+  const info = props.hudInfo.accountInfo;
+  if (!info) return '확인 중';
+  const raw = info.displayLabel || '확인 필요';
+  return raw.length > 22 ? `${raw.slice(0, 21)}..` : raw;
+});
+
+const accountTooltip = computed(() => {
+  const info = props.hudInfo.accountInfo;
+  if (!info) return '현재 접속 계정 상태 확인 및 라벨 지정';
+  return `${info.authMethod || ''} · ${info.displayLabel || ''} (클릭하여 상세 보기/라벨 설정)`;
+});
+
+watch(
+  () => props.hudInfo.accountInfo && props.hudInfo.accountInfo.customLabel,
+  nextLabel => {
+    accountLabelDraft.value = nextLabel || '';
+  },
+  { immediate: true }
+);
 
 const formattedTotalTokens = computed(() =>
   formatTokens(props.hudInfo.tokenSummary && props.hudInfo.tokenSummary.totalTokens)
@@ -148,6 +222,45 @@ function submitWorkspace() {
   if (!clean) return;
   emitAction('UPDATE_WORKSPACE', { targetWorkspace: clean });
 }
+
+function toggleAccountPopover() {
+  if (!showAccountPopover.value) {
+    accountLabelDraft.value = (props.hudInfo.accountInfo && props.hudInfo.accountInfo.customLabel) || '';
+  }
+  showAccountPopover.value = !showAccountPopover.value;
+}
+
+function saveAccountLabel() {
+  emitAction('UPDATE_ACCOUNT_LABEL', {
+    providerId: props.hudInfo.providerId,
+    label: (accountLabelDraft.value || '').trim()
+  });
+  showAccountPopover.value = false;
+}
+
+function clearAccountLabel() {
+  accountLabelDraft.value = '';
+  emitAction('UPDATE_ACCOUNT_LABEL', {
+    providerId: props.hudInfo.providerId,
+    label: ''
+  });
+  showAccountPopover.value = false;
+}
+
+function onDocMouseDown(ev) {
+  if (!showAccountPopover.value || !accountWrapRef.value) return;
+  if (!accountWrapRef.value.contains(ev.target)) {
+    showAccountPopover.value = false;
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocMouseDown);
+});
 </script>
 
 <style lang="scss" scoped>
@@ -351,5 +464,147 @@ function submitWorkspace() {
   border-color: $state-working;
   color: $term-blue;
   background-color: rgba(59, 130, 246, 0.14);
+}
+
+.account-wrap {
+  position: relative;
+}
+
+.account-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background-color: $bg-input;
+  border: 1px solid $border-subtle;
+  border-radius: 4px;
+  color: $text-secondary;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover,
+  &.is-active {
+    background-color: $bg-hover;
+    border-color: $state-working;
+    color: $text-primary;
+  }
+}
+
+.account-tag {
+  color: $text-muted;
+  font-weight: 600;
+}
+
+.account-val {
+  font-family: $font-mono;
+  color: $text-primary;
+}
+
+.account-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 340px;
+  padding: 11px 12px;
+  background-color: $bg-surface;
+  border: 1px solid $border-strong;
+  border-radius: 6px;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: $text-primary;
+  padding-bottom: 6px;
+  border-bottom: 1px solid $border-subtle;
+}
+
+.pop-close {
+  background: transparent;
+  border: 1px solid $border-subtle;
+  border-radius: 3px;
+  color: $text-secondary;
+  font-size: 10.5px;
+  padding: 2px 6px;
+  cursor: pointer;
+
+  &:hover {
+    color: $text-primary;
+  }
+}
+
+.pop-meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.pop-key {
+  color: $text-muted;
+  flex-shrink: 0;
+}
+
+.pop-val {
+  color: $text-primary;
+  text-align: right;
+  word-break: break-all;
+}
+
+.pop-note {
+  padding: 6px 8px;
+  background-color: $bg-input;
+  border: 1px solid $border-subtle;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: $text-secondary;
+}
+
+.pop-label-form {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 4px;
+  border-top: 1px solid $border-subtle;
+}
+
+.pop-form-label {
+  font-size: 10.5px;
+  color: $text-muted;
+}
+
+.pop-form-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pop-input {
+  flex: 1;
+  min-width: 0;
+  background-color: $bg-input;
+  border: 1px solid $border-strong;
+  border-radius: 4px;
+  color: $text-primary;
+  padding: 4px 7px;
+  font-size: 11.5px;
+  outline: none;
+
+  &:focus {
+    border-color: $state-working;
+  }
+}
+
+.mono {
+  font-family: $font-mono;
 }
 </style>

@@ -52,6 +52,48 @@ function normalizeEmphasisSpacing(text) {
 }
 
 /**
+ * 안전 HTML 내 로컬 파일/아티팩트(file:///, 인라인 코드, 일반 텍스트 .md) 링크 변환
+ * @author Jangsung
+ * @param {String} html
+ * @return {String}
+ */
+export function linkifyLocalFiles(html) {
+  if (!html) return '';
+  const withStyledAnchors = html.replace(
+    /<a\b([^>]*\bhref\s*=\s*"([^"]+)"[^>]*)>/gi,
+    (full, attrs, href) => {
+      const cleanHref = String(href || '').trim();
+      if (!cleanHref || cleanHref.startsWith('#') || /^https?:\/\//i.test(cleanHref) || /^mailto:/i.test(cleanHref)) {
+        return full;
+      }
+      if (/class\s*=/i.test(attrs)) return full;
+      return `<a${attrs} class="local-file-link" title="클릭하여 문서 미리보기">`;
+    }
+  );
+  const withCodeLinks = withStyledAnchors.replace(
+    /<code>([^<>\r\n]+\.(?:md|markdown|txt|json|log))<\/code>/gi,
+    (full, filePath) => {
+      const clean = filePath.trim();
+      if (!clean || /^https?:\/\//i.test(clean)) return full;
+      return `<a href="${clean.replace(/"/g, '&quot;')}" class="local-file-link" title="클릭하여 문서 미리보기"><code>${filePath}</code></a>`;
+    }
+  );
+  return withCodeLinks
+    .split(/(<a\b[^>]*>[\s\S]*?<\/a>|<pre\b[^>]*>[\s\S]*?<\/pre>|<[^>]+>)/gi)
+    .map(part => {
+      if (!part || part[0] === '<') return part;
+      return part.replace(
+        /((?:[A-Za-z]:[\\/]|file:\/\/\/)?[^\s<>'"`()[\]]*\.(?:md|markdown))\b/gi,
+        (full, filePath) => {
+          if (/^https?:\/\//i.test(filePath)) return full;
+          return `<a href="${filePath.replace(/"/g, '&quot;')}" class="local-file-link" title="클릭하여 문서 미리보기">${filePath}</a>`;
+        }
+      );
+    })
+    .join('');
+}
+
+/**
  * 마크다운 문자열을 XSS 차단된 안전 HTML로 변환
  * @author Jangsung
  * @param {String} text
@@ -61,8 +103,11 @@ export function renderMarkdown(text) {
   if (!text || typeof text !== 'string') return '';
   const normalized = normalizeEmphasisSpacing(text);
   const rawHtml = marked.parse(normalized);
-  return DOMPurify.sanitize(rawHtml, {
+  const sanitized = DOMPurify.sanitize(rawHtml, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ['type', 'class']
+    ADD_ATTR: ['type', 'class'],
+    // 로컬 아티팩트/문서 미리보기(file:///) 링크가 제거되지 않도록 file 스킴 허용 (javascript:, data: 등은 계속 차단)
+    ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|file|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
   });
+  return linkifyLocalFiles(sanitized);
 }

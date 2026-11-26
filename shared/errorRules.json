@@ -1,0 +1,58 @@
+[
+  {
+    "id": "session_not_found",
+    "patterns": ["trajectory not found", "세션을 찾을 수 없습니다", "conversation.*not found"],
+    "title": "세션 ID를 찾을 수 없음",
+    "summary": "연결된 세션이 삭제되었거나 Antigravity 데스크톱 앱 전용 세션 ID여서 CLI가 이어받을 수 없습니다.",
+    "action": "하단 콘솔에서 [새 세션]을 체크하고 다시 실행하거나, 상단 드롭다운에서 다른 CLI 세션을 연결하세요.",
+    "aiExplainable": false
+  },
+  {
+    "id": "quota_exceeded",
+    "patterns": ["429", "quota", "rate.?limit", "resource_exhausted", "too many requests"],
+    "title": "API 호출 한도(Quota) 초과",
+    "summary": "선택한 모델 또는 계정의 사용량 제한에 도달해 요청이 거절되었습니다.",
+    "action": "잠시 후 다시 시도하거나 하단 콘솔에서 다른 모델(예: Flash 계열) 또는 다른 계정으로 전환하세요.",
+    "aiExplainable": false
+  },
+  {
+    "id": "auth_required",
+    "patterns": ["unauthorized", "unauthenticated", "\\b401\\b", "\\b403\\b", "not logged in", "login required", "keyring", "credential"],
+    "title": "CLI 인증 만료 또는 미로그인",
+    "summary": "CLI 인증 세션이 만료되었거나 OS 키링/인증 파일에서 자격증명을 읽지 못했습니다.",
+    "action": "터미널에서 agy(/logout 후 재실행) 또는 codex login으로 다시 로그인한 뒤 실행하세요.",
+    "aiExplainable": false
+  },
+  {
+    "id": "network_error",
+    "patterns": ["ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND", "ECONNRESET", "fetch failed", "network error", "socket hang up"],
+    "title": "네트워크 연결 또는 응답 시간 초과",
+    "summary": "원격 API 서버 또는 로컬 포트와의 통신 연결에 실패했거나 제한 시간 내에 응답이 오지 않았습니다.",
+    "action": "인터넷·사내 프록시 연결 및 로컬 브리지 실행 상태를 확인한 뒤 다시 시도하세요.",
+    "aiExplainable": false
+  },
+  {
+    "id": "port_in_use",
+    "patterns": ["EADDRINUSE", "이미 사용 중입니다"],
+    "title": "포트 충돌",
+    "summary": "실행하려는 네트워크 포트를 다른 프로세스가 이미 점유하고 있습니다.",
+    "action": "기존 실행 프로세스를 종료하거나 다른 포트(OFFICE_PORT)를 지정해 실행하세요.",
+    "aiExplainable": true
+  },
+  {
+    "id": "invalid_model_or_flag",
+    "patterns": ["unknown model", "invalid.*model", "unsupported.*effort", "unknown flag", "unexpected argument"],
+    "title": "모델 ID 또는 실행 옵션 불일치",
+    "summary": "선택한 모델 ID, 추론 강도(--effort), 또는 CLI 플래그 조합이 현재 설치된 CLI 버전에서 지원되지 않습니다.",
+    "action": "하단 콘솔의 [?] 모델 안내에서 [목록 갱신]을 누른 뒤 지원되는 모델/옵션으로 다시 실행하세요.",
+    "aiExplainable": true
+  },
+  {
+    "id": "file_or_bin_missing",
+    "patterns": ["ENOENT", "is not recognized", "command not found", "no such file or directory"],
+    "title": "실행 파일 또는 경로 없음",
+    "summary": "지정한 CLI 바이너리 또는 작업 폴더/파일 경로를 찾을 수 없습니다.",
+    "action": "상단 WORKSPACE 경로와 CLI 설치 경로가 실제 디스크에 존재하는지 확인하세요.",
+    "aiExplainable": true
+  }
+]

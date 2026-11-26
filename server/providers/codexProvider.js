@@ -63,6 +63,7 @@ const CAPABILITIES = {
 
 let modelCache = { fetchedAt: 0, list: [] };
 let indexCache = { mtimeKey: '', data: null };
+let accountCache = { authMtimeMs: -1, statusCheckedAt: 0, statusLine: '', parsedAuth: null };
 const codexFileByConvId = new Map();
 
 /**
@@ -1355,7 +1356,7 @@ function stopCodexJob(agentId, runningJobs, finishedJobs, onStreamEvent, opts = 
  * @param {Object} params
  * @return {Object}
  */
-function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, domainPath, fallbackBaseDir }) {
+function generateHandoverDocument({ agentId, ruleAgentId, convId, targetWorkspace, rulesDir, domainPath, fallbackBaseDir }) {
   const filePath = findCodexSessionPath(convId);
   if (!filePath) {
     throw new Error('Codex 세션 로그 파일을 찾을 수 없습니다: ' + convId);
@@ -1411,6 +1412,7 @@ function generateHandoverDocument({ agentId, convId, targetWorkspace, rulesDir, 
 
   return writeHandoverMarkdownFile({
     agentId,
+    ruleAgentId,
     convId,
     fileSizeMB,
     lastStepIndex,
@@ -1449,10 +1451,157 @@ function deleteCodexSession(convId) {
   return true;
 }
 
+/**
+ * JWT ID 토큰 페이로드의 비민감 공개 클레임(email, chatgpt_plan_type)만 안전 추출 (시크릿 미보관)
+ * @author Jangsung
+ * @param {String} idToken
+ * @return {Object}
+ */
+function parseJwtPublicClaims(idToken) {
+  if (typeof idToken !== 'string') return { email: '', plan: '' };
+  const parts = idToken.split('.');
+  if (parts.length < 2) return { email: '', plan: '' };
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padLen = (4 - (b64.length % 4)) % 4;
+    const payload = JSON.parse(Buffer.from(b64 + '='.repeat(padLen), 'base64').toString('utf8'));
+    const authClaim = payload && typeof payload['https://api.openai.com/auth'] === 'object'
+      ? payload['https://api.openai.com/auth']
+      : {};
+    const email = typeof (payload && payload.email) === 'string' ? payload.email.trim() : '';
+    const plan = typeof authClaim.chatgpt_plan_type === 'string'
+      ? authClaim.chatgpt_plan_type.trim()
+      : (typeof (payload && payload.plan) === 'string' ? payload.plan.trim() : '');
+    return { email, plan };
+  } catch (_) {
+    return { email: '', plan: '' };
+  }
+}
+
+/**
+ * ~/.codex/auth.json에서 비민감 계정 메타(로그인 방식, 이메일, 플랜) 캐시 조회
+ * @author Jangsung
+ * @return {Object}
+ */
+function readCodexAuthPublicMeta() {
+  const authPath = path.join(getCodexHomeDir(), 'auth.json');
+  const envHasKey = Boolean(typeof process.env.OPENAI_API_KEY === 'string' && process.env.OPENAI_API_KEY.trim());
+  if (!fs.existsSync(authPath)) {
+    accountCache.authMtimeMs = -1;
+    accountCache.parsedAuth = { exists: false, authMode: envHasKey ? 'api_key_env' : '', email: '', plan: '', hasApiKey: envHasKey };
+    return accountCache.parsedAuth;
+  }
+  try {
+    const st = fs.statSync(authPath);
+    if (accountCache.parsedAuth && accountCache.authMtimeMs === st.mtimeMs) {
+      return accountCache.parsedAuth;
+    }
+    const raw = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+    const authMode = typeof (raw && raw.auth_mode) === 'string' ? raw.auth_mode.trim() : '';
+    const hasApiKey = envHasKey || Boolean(raw && typeof raw.OPENAI_API_KEY === 'string' && raw.OPENAI_API_KEY.trim());
+    const idToken = raw && raw.tokens && typeof raw.tokens.id_token === 'string' ? raw.tokens.id_token : '';
+    const claims = parseJwtPublicClaims(idToken);
+    accountCache.authMtimeMs = st.mtimeMs;
+    accountCache.parsedAuth = {
+      exists: true,
+      authMode: authMode || (claims.email ? 'chatgpt' : (hasApiKey ? 'api_key' : '')),
+      email: claims.email,
+      plan: claims.plan,
+      hasApiKey
+    };
+    return accountCache.parsedAuth;
+  } catch (_) {
+    return { exists: true, authMode: envHasKey ? 'api_key_env' : '', email: '', plan: '', hasApiKey: envHasKey };
+  }
+}
+
+/**
+ * Codex CLI 현재 로그인 계정 정보 조회 (동기 캐시 기반)
+ * @author Jangsung
+ * @param {String} customLabel
+ * @return {Object}
+ */
+function getAccountInfo(customLabel = '') {
+  const cli = detectCli();
+  const cleanLabel = typeof customLabel === 'string' ? customLabel.trim().slice(0, 60) : '';
+  const meta = readCodexAuthPublicMeta();
+  const statusText = accountCache.statusLine || '';
+  const statusLoggedIn = /logged\s+in/i.test(statusText);
+  const authenticated = Boolean(meta.email || meta.hasApiKey || statusLoggedIn);
+
+  let authMethod = '미인증';
+  if (meta.email || meta.authMode === 'chatgpt' || /chatgpt/i.test(statusText)) {
+    authMethod = meta.plan ? `ChatGPT (${meta.plan})` : 'ChatGPT OAuth';
+  } else if (meta.hasApiKey) {
+    authMethod = 'OpenAI API Key';
+  } else if (statusLoggedIn) {
+    authMethod = statusText;
+  }
+
+  let autoLabel = '';
+  if (meta.email) {
+    autoLabel = meta.plan ? `${meta.email} (${meta.plan})` : meta.email;
+  } else if (statusLoggedIn) {
+    autoLabel = statusText;
+  } else if (meta.hasApiKey) {
+    autoLabel = 'OpenAI API Key 인증됨';
+  } else if (!cli.available) {
+    autoLabel = 'CLI 미감지';
+  } else {
+    autoLabel = '로그인 필요';
+  }
+
+  const displayLabel = cleanLabel
+    ? (meta.email ? `${cleanLabel} (${meta.email})` : cleanLabel)
+    : autoLabel;
+
+  return {
+    providerId: PROVIDER_ID,
+    authenticated,
+    autoDetected: Boolean(meta.email || statusLoggedIn || meta.hasApiKey),
+    supportsAutoDetect: true,
+    detectedEmail: meta.email || '',
+    authMethod,
+    plan: meta.plan || '',
+    customLabel: cleanLabel,
+    displayLabel,
+    note: statusText || (cli.available ? 'codex login status 및 auth.json 공개 메타 기준 조회' : '로컬 Codex CLI가 설치되어 있지 않습니다.')
+  };
+}
+
+/**
+ * codex login status 비동기 갱신 (30초 캐시)
+ * @author Jangsung
+ * @param {String} customLabel
+ * @param {Boolean} forceRefresh
+ * @return {Promise<Object>}
+ */
+function refreshAccountInfo(customLabel = '', forceRefresh = false) {
+  const cli = detectCli();
+  const now = Date.now();
+  if (!cli.available || (!forceRefresh && now - accountCache.statusCheckedAt < 30 * 1000)) {
+    return Promise.resolve(getAccountInfo(customLabel));
+  }
+  return new Promise(resolve => {
+    execFile(cli.binPath, ['login', 'status'], { timeout: 3000, windowsHide: true }, (err, stdout, stderr) => {
+      accountCache.statusCheckedAt = Date.now();
+      const rawOut = `${stdout || ''}\n${stderr || ''}`.replace(/\s+/g, ' ').trim();
+      if (!err && rawOut) {
+        accountCache.statusLine = rawOut.slice(0, 120);
+      } else if (rawOut) {
+        accountCache.statusLine = rawOut.slice(0, 120);
+      }
+      resolve(getAccountInfo(customLabel));
+    });
+  });
+}
+
 module.exports = {
   id: PROVIDER_ID,
   getCapabilities: () => ({ ...CAPABILITIES, sessionStoreDir: getCodexSessionsDir() }),
   detectCli,
+  getAccountInfo,
+  refreshAccountInfo,
   getSessionStoreDir: getCodexSessionsDir,
   readHistoryIndex: readCodexHistoryIndex,
   getModels: getAvailableModels,

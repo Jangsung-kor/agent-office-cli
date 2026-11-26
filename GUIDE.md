@@ -113,7 +113,7 @@
 
 1. **원터치 커맨드 (`QUICK CMD`)**:
    - `[변경사항 분석]`: 현재 `WORKSPACE`의 `git status` 및 최근 변경 파일 구조 요약을 `plan` 모드(`--effort medium`)로 즉시 요청합니다.
-   - `[세션 정리]`: 연결된 CLI 세션 로그(최근 최대 2MB)를 분석해 `SESSION_HANDOVER_TEMPLATE.md` 표준 6대 목차 양식의 인수인계서 초안을 파일로 생성하고 결과 모달(`HandoverModal`)을 엽니다. (생성 위치는 `<WORKSPACE>/<rulesDir>/<AgentId>/handovers/` 또는 프로젝트 내 `handovers/` 폴백)
+   - `[세션 정리]`: 연결된 CLI 세션 로그(최근 최대 2MB)를 분석해 `SESSION_HANDOVER_TEMPLATE.md` 표준 6대 목차 양식의 인수인계서 초안을 파일로 생성하고 결과 모달(`HandoverModal`)을 엽니다. (생성 위치는 다중 에이전트 프로젝트 `<WORKSPACE>/<rulesDir>/<AgentId>/HANDOVER.md`, 단일 프로젝트 `<WORKSPACE>/HANDOVER.md`이며 기존 `HANDOVER.md` 존재 시 `HANDOVER.draft.md` 생성)
    - `[모델 갱신]`: `agy models`를 다시 실행해 사용 가능한 모델 목록을 갱신합니다.
    - `[새 세션으로 실행]`: 체크 시 기존 대화(`--conversation`)를 이어가지 않고 새 CLI 세션을 생성해 실행합니다.
 

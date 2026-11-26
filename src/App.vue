@@ -1,12 +1,7 @@
 <template>
   <ProviderSelectScreen
     v-if="store.showProviderSelector"
-    :providers="store.providers"
-    :active-provider="store.activeProvider"
-    :target-workspace="store.targetWorkspace"
-    :loading="store.providersLoading"
-    :switching-id="store.providerSwitchingId"
-    :error="store.lastError"
+    :screen-data="providerScreenData"
     @action="handleAction"
   />
 
@@ -162,13 +157,11 @@
     </main>
 
     <ModelGuideModal
-      :visible="store.activeModal === 'modelGuide'"
-      :provider-id="store.activeProvider"
+      :modal-data="modelGuideModalData"
       @action="handleAction"
     />
     <HandoverModal
-      :visible="store.activeModal === 'handover'"
-      :handover="store.handoverResult"
+      :modal-data="handoverModalData"
       @action="handleAction"
     />
     <TeamRosterModal
@@ -193,6 +186,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useOfficeStore } from '@/stores/officeStore';
 import { getHealthMeta, HEALTH_CRITERIA } from '@/constants/officeLayout';
+import { readNumberStorage, writeStorage } from '@/utils/storage';
 import OfficeHudHeader from '@/components/OfficeHudHeader.vue';
 import OfficeCanvas from '@/components/OfficeCanvas.vue';
 import AgentChatPanel from '@/components/AgentChatPanel.vue';
@@ -217,21 +211,9 @@ const canvasCollapsed = ref(false);
 const isDraggingV = ref(false);
 const isDraggingH = ref(false);
 
-const leftWidthPct = ref(readSavedNumber(STORAGE_LEFT_W, 50, 28, 72));
-const topHeightPct = ref(readSavedNumber(STORAGE_TOP_H, 60, 35, 80));
+const leftWidthPct = ref(readNumberStorage(STORAGE_LEFT_W, 50, 28, 72));
+const topHeightPct = ref(readNumberStorage(STORAGE_TOP_H, 60, 35, 80));
 const selectedMapConvId = ref('');
-
-/**
- * localStorage 저장 비율 안전 조회
- * @author Jangsung
- */
-function readSavedNumber(key, fallback, min, max) {
-  try {
-    const raw = Number(localStorage.getItem(key));
-    if (Number.isFinite(raw) && raw >= min && raw <= max) return raw;
-  } catch (_) {}
-  return fallback;
-}
 
 const currentAgent = computed(() => store.selectedAgent || {
   id: 'Master',
@@ -263,7 +245,6 @@ const isCurrentAgentWorking = computed(() =>
   Boolean(
     currentAgent.value.cliRunning
     || currentAgent.value.state === 'WORKING'
-    || currentAgent.value.state === 'PLANNING'
   )
 );
 
@@ -276,10 +257,10 @@ const hudInfo = computed(() => ({
   bridgeVersion: store.bridgeVersion,
   providerId: store.activeProvider,
   providerName: (store.providerCapabilities && store.providerCapabilities.name) || 'ANTIGRAVITY',
+  accountInfo: store.accountInfo,
   targetWorkspace: store.targetWorkspace,
   pipelineStats: store.pipelineStats,
   tokenSummary: store.tokenSummary,
-  meetingActive: store.meetingActive,
   canvasCollapsed: canvasCollapsed.value,
   activeTeamCount: store.activeAgentIds.length,
   allAgentsCount: store.allAgents.length
@@ -289,7 +270,6 @@ const canvasState = computed(() => ({
   agents: store.officeAgents,
   selectedAgentId: store.selectedAgentId,
   hoveredAgentId: store.hoveredAgentId,
-  meetingActive: store.meetingActive,
   packets: store.packets,
   pipelineStats: store.pipelineStats
 }));
@@ -302,7 +282,29 @@ const chatPanelData = computed(() => ({
   activeStream: store.activeStream,
   rawStreamLogs: store.activeRawStreamLogs,
   targetWorkspace: store.targetWorkspace,
-  cliCommand: (store.providerCapabilities && store.providerCapabilities.cliCommand) || 'agy'
+  cliCommand: (store.providerCapabilities && store.providerCapabilities.cliCommand) || 'agy',
+  errorExplainMode: store.errorExplainMode,
+  errorExplanations: store.errorExplanations,
+  filePreview: store.filePreview
+}));
+
+const providerScreenData = computed(() => ({
+  providers: store.providers,
+  activeProvider: store.activeProvider,
+  targetWorkspace: store.targetWorkspace,
+  loading: store.providersLoading,
+  switchingId: store.providerSwitchingId,
+  error: store.lastError
+}));
+
+const modelGuideModalData = computed(() => ({
+  visible: store.activeModal === 'modelGuide',
+  providerId: store.activeProvider
+}));
+
+const handoverModalData = computed(() => ({
+  visible: store.activeModal === 'handover',
+  handover: store.handoverResult
 }));
 
 const consoleData = computed(() => ({
@@ -312,7 +314,9 @@ const consoleData = computed(() => ({
   promptPrefs: store.promptPrefs,
   isSubmitting: Boolean(store.submittingByAgent[currentAgent.value.id]),
   handoverLoading: store.handoverLoading,
-  lastError: store.lastError
+  lastError: store.lastError,
+  errorExplainMode: store.errorExplainMode,
+  errorExplanations: store.errorExplanations
 }));
 
 const rosterData = computed(() => ({
@@ -404,11 +408,11 @@ function onWindowMouseMove(e) {
 function onWindowMouseUp() {
   if (isDraggingV.value) {
     isDraggingV.value = false;
-    try { localStorage.setItem(STORAGE_LEFT_W, String(leftWidthPct.value)); } catch (_) {}
+    writeStorage(STORAGE_LEFT_W, leftWidthPct.value);
   }
   if (isDraggingH.value) {
     isDraggingH.value = false;
-    try { localStorage.setItem(STORAGE_TOP_H, String(topHeightPct.value)); } catch (_) {}
+    writeStorage(STORAGE_TOP_H, topHeightPct.value);
   }
 }
 
@@ -779,10 +783,6 @@ body,
     color: $term-blue;
     border-color: $state-working;
   }
-  &.state-planning {
-    color: $state-planning;
-    border-color: $state-planning;
-  }
   &.state-done {
     color: $term-green;
     border-color: $state-done;
@@ -844,7 +844,6 @@ body,
   background-color: $state-idle;
 
   &.state-working { background-color: $state-working; }
-  &.state-planning { background-color: $state-planning; }
   &.state-done { background-color: $state-done; }
   &.state-blocked { background-color: $state-blocked; }
 }

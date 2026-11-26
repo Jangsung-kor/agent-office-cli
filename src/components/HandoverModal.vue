@@ -1,56 +1,51 @@
 <template>
-  <div v-if="visible && handover" class="modal-backdrop" @click.self="closeModal">
-    <div class="modal-dialog">
-      <header class="modal-header">
-        <span class="modal-title">
-          세션 인수인계서 생성 완료 — {{ handover.agentId }} ({{ handover.healthLabel }}, {{ handover.fileSizeMB }}MB)
-        </span>
-        <button type="button" class="btn btn-sm" @click="closeModal">닫기</button>
-      </header>
-
-      <div class="modal-body">
-        <div class="modal-desc">
-          표준 규격(<code>SESSION_HANDOVER_TEMPLATE.md</code>)에 따라 아래 경로에 저장했습니다.
-        </div>
-        <div class="path-box">{{ handover.filePath }}</div>
-        <div class="section-label">문서 내용</div>
-        <pre class="doc-pre">{{ handover.content }}</pre>
-        <div v-if="copyFeedback" class="copy-feedback">{{ copyFeedback }}</div>
+  <BaseModal
+    :visible="Boolean(modalData.visible && modalData.handover)"
+    :title="modalData.handover ? `세션 인수인계서 생성 완료 — ${modalData.handover.agentId} (${modalData.handover.healthLabel}, ${modalData.handover.fileSizeMB}MB)` : ''"
+    max-width="820px"
+    max-height="88vh"
+    body-gap="0px"
+    @close="closeModal"
+  >
+    <div v-if="modalData.handover">
+      <div class="modal-desc">
+        표준 규격(<code>SESSION_HANDOVER_TEMPLATE.md</code>)에 따라 아래 경로에 저장했습니다.
       </div>
-
-      <footer class="modal-footer">
-        <button type="button" class="btn btn-warn" @click="copyText(handover.agentRefinePrompt, '보완 지시문')">
-          보완 지시문 복사
-        </button>
-        <button type="button" class="btn btn-primary" @click="copyText(handover.bootstrapPrompt, '새 세션 프롬프트')">
-          새 세션 프롬프트 복사
-        </button>
-        <button
-          v-if="handover.convId"
-          type="button"
-          class="btn"
-          title="정리가 끝난 이 세션을 보관(숨김) 상태로 전환"
-          @click="archiveHandoverSession"
-        >
-          이 세션 보관(정리 완료)
-        </button>
-        <button type="button" class="btn" @click="closeModal">닫기</button>
-      </footer>
+      <div class="path-box">{{ modalData.handover.filePath }}</div>
+      <div class="section-label">문서 내용</div>
+      <pre class="doc-pre">{{ modalData.handover.content }}</pre>
+      <div v-if="copyFeedback" class="copy-feedback">{{ copyFeedback }}</div>
     </div>
-  </div>
+
+    <template #footer>
+      <button type="button" class="btn btn-warn" @click="copyText(modalData.handover.agentRefinePrompt, '보완 지시문')">
+        보완 지시문 복사
+      </button>
+      <button type="button" class="btn btn-primary" @click="copyText(modalData.handover.bootstrapPrompt, '새 세션 프롬프트')">
+        새 세션 프롬프트 복사
+      </button>
+      <button
+        v-if="modalData.handover && modalData.handover.convId"
+        type="button"
+        class="btn"
+        title="정리가 끝난 이 세션을 보관(숨김) 상태로 전환"
+        @click="archiveHandoverSession"
+      >
+        이 세션 보관(정리 완료)
+      </button>
+      <button type="button" class="btn" @click="closeModal">닫기</button>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup>
 import { ref } from 'vue';
+import BaseModal from '@/components/BaseModal.vue';
 
 const props = defineProps({
-  visible: {
-    type: Boolean,
-    default: false
-  },
-  handover: {
+  modalData: {
     type: Object,
-    default: null
+    required: true
   }
 });
 
@@ -63,10 +58,11 @@ function closeModal() {
 }
 
 function archiveHandoverSession() {
-  if (!props.handover || !props.handover.convId) return;
+  const handover = props.modalData && props.modalData.handover;
+  if (!handover || !handover.convId) return;
   emit('action', {
     type: 'UPDATE_SESSION_META',
-    payload: { convId: props.handover.convId, archived: true }
+    payload: { convId: handover.convId, archived: true }
   });
   copyFeedback.value = '이 세션을 정리됨(보관) 상태로 전환했습니다.';
 }
@@ -83,50 +79,6 @@ async function copyText(text, label) {
 </script>
 
 <style lang="scss" scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(8, 11, 16, 0.8);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-dialog {
-  width: min(820px, 92vw);
-  max-height: 88vh;
-  background-color: $bg-surface;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal-header {
-  padding: 12px 16px;
-  background-color: $bg-header;
-  border-bottom: 1px solid $border-subtle;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.modal-title {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: $text-primary;
-}
-
-.modal-body {
-  padding: 14px 16px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 
 .modal-desc {
   font-size: 12px;

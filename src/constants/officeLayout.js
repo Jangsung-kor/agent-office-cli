@@ -3,11 +3,9 @@ export const LOGICAL_HEIGHT = 660;
 
 export const STATE_META = {
   IDLE: { label: 'IDLE', ko: '대기 중', color: '#64748b', bg: 'rgba(100,116,139,0.16)' },
-  PLANNING: { label: 'PLANNING', ko: '분석/배분', color: '#818cf8', bg: 'rgba(129,140,248,0.16)' },
-  WORKING: { label: 'WORKING', ko: '작업 수행', color: '#3b82f6', bg: 'rgba(59,130,246,0.16)' },
-  REVIEW: { label: 'REVIEW', ko: '검증/검수', color: '#2dd4bf', bg: 'rgba(45,212,191,0.16)' },
-  BLOCKED: { label: 'BLOCKED', ko: '일시중단', color: '#d97706', bg: 'rgba(217,119,6,0.16)' },
-  DONE: { label: 'DONE', ko: '완료 보고', color: '#10b981', bg: 'rgba(16,185,129,0.16)' }
+  WORKING: { label: 'WORKING', ko: '작업 중', color: '#3b82f6', bg: 'rgba(59,130,246,0.16)' },
+  BLOCKED: { label: 'BLOCKED', ko: '중단/오류', color: '#d97706', bg: 'rgba(217,119,6,0.16)' },
+  DONE: { label: 'DONE', ko: '완료', color: '#10b981', bg: 'rgba(16,185,129,0.16)' }
 };
 
 const SHIRT_PALETTE = [
@@ -27,9 +25,7 @@ const LOUNGE_CHIPS = [
 ];
 
 const OFFICE_CHIPS = [
-  { label: 'PLANNING', color: '#818cf8' },
   { label: 'WORKING', color: '#3b82f6' },
-  { label: 'REVIEW', color: '#2dd4bf' },
   { label: 'BLOCKED', color: '#d97706' }
 ];
 
@@ -62,7 +58,6 @@ export const ZONES = {
 const EXTRA_WORKER_SLOTS = SHIRT_PALETTE.slice(4).map((shirtColor, idx) => ({
   desk: { x: 400 + idx * 60, y: 460 },
   lounge: { x: 240 + idx * 80, y: 170 },
-  meetingSeat: { x: 460 + idx * 40, y: 440 },
   shirtColor
 }));
 
@@ -119,19 +114,9 @@ function createCenteredSeatResolver(lounge, office, { maxDeskCols, deskPitchX, m
       : Math.round((lUsableTop + lUsableBot) / 2 - ((loungeRows - 1) * lStepY) / 2);
     const loungeY = lStartY + lRow * lStepY;
 
-    // 3. 회의 소집 시 사무실 중앙 원형/군집 배치
-    const mCols = Math.min(4, safeTotal);
-    const mRows = Math.ceil(safeTotal / mCols);
-    const mRow = Math.floor(idx / mCols);
-    const mCol = idx % mCols;
-    const mRowItems = Math.min(mCols, safeTotal - mRow * mCols);
-    const meetingX = Math.round(officeCenterX - ((mRowItems - 1) * 92) / 2 + mCol * 92);
-    const meetingY = Math.round(office.y + office.h * 0.52 - ((mRows - 1) * 72) / 2 + mRow * 72);
-
     return {
       desk: { x: deskX, y: deskY },
       lounge: { x: loungeX, y: loungeY },
-      meetingSeat: { x: meetingX, y: meetingY },
       shirtColor: SHIRT_PALETTE[idx % SHIRT_PALETTE.length]
     };
   };
@@ -228,21 +213,18 @@ export function isLoungeState(state) {
  * 활성 에이전트 목록/맵을 받아 레이아웃 사양 기준 좌표 및 색상 배정
  * @author Jangsung
  * @param {Object|Array} agentSource
- * @param {Boolean} meetingActive
  * @param {Object} layoutSpec
  * @return {Array<Object>}
  */
-export function assignAgentSeats(agentSource, meetingActive = false, layoutSpec = null) {
+export function assignAgentSeats(agentSource, layoutSpec = null) {
   const entries = Array.isArray(agentSource) ? agentSource : Object.values(agentSource || {});
   if (entries.length === 0) return [];
   const spec = layoutSpec || buildResponsiveOfficeSpec(LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
   return entries.map((agent, workIndex) => {
     const slot = spec.getSeat(workIndex, entries.length);
-    const state = meetingActive ? 'PLANNING' : (agent.state || 'IDLE');
-    const targetPos = meetingActive
-      ? slot.meetingSeat
-      : (isLoungeState(state) ? slot.lounge : slot.desk);
+    const state = agent.state || 'IDLE';
+    const targetPos = isLoungeState(state) ? slot.lounge : slot.desk;
 
     return {
       ...agent,
@@ -251,9 +233,8 @@ export function assignAgentSeats(agentSource, meetingActive = false, layoutSpec 
       shirtColor: slot.shirtColor,
       desk: slot.desk,
       lounge: slot.lounge,
-      meetingSeat: slot.meetingSeat,
       state,
-      bubbleText: meetingActive ? '전체 동기화 회의 참석 중' : (agent.bubbleText || '대기 중'),
+      bubbleText: agent.bubbleText || '대기 중',
       currentTask: agent.currentTask || '-',
       currentTaskSummary: agent.currentTaskSummary || '-',
       currentTaskRaw: agent.currentTaskRaw || '-',
@@ -332,7 +313,7 @@ export function getHealthMeta(fileSizeMB, hasSession) {
 export function resolveDynamicWorkers(sessions, assignedConvIds) {
   if (!Array.isArray(sessions) || sessions.length === 0) return [];
   const unassignedActive = sessions.filter(
-    s => !s.archived && !s.role && !assignedConvIds.has(s.convId) && (s.state === 'WORKING' || s.state === 'PLANNING' || s.ageSec <= 600)
+    s => !s.archived && !s.role && !assignedConvIds.has(s.convId) && (s.state === 'WORKING' || s.ageSec <= 600)
   );
   return unassignedActive.slice(0, EXTRA_WORKER_SLOTS.length).map((s, idx) => {
     const slot = EXTRA_WORKER_SLOTS[idx];
@@ -345,7 +326,6 @@ export function resolveDynamicWorkers(sessions, assignedConvIds) {
       shirtColor: slot.shirtColor,
       desk: slot.desk,
       lounge: slot.lounge,
-      meetingSeat: slot.meetingSeat,
       isDynamicWorker: true,
       convId: s.convId,
       convOrigin: s.origin || 'cli',
@@ -358,7 +338,7 @@ export function resolveDynamicWorkers(sessions, assignedConvIds) {
       fileSizeMB: s.fileSizeMB || 0,
       lastStepIndex: s.lastStepIndex || 0,
       lastActiveIso: s.lastActiveIso || null,
-      cliRunning: s.state === 'WORKING' || s.state === 'PLANNING',
+      cliRunning: s.state === 'WORKING',
       logs: []
     };
   });
