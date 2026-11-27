@@ -42,7 +42,7 @@
 
         <span class="meta-count">
           {{ panelData.agent.convId ? `세션 ${panelData.agent.convId.slice(0, 8)}` : '세션 미연결' }}
-          · 스텝 {{ panelData.messages.length }}
+          · 대화 {{ chatMessages.length }} · 도구 {{ totalToolCallCount }}
         </span>
         <button
           type="button"
@@ -101,8 +101,8 @@
         <span class="c-blue">[LOAD]</span> CLI 세션 대화 이력을 불러오는 중입니다...
       </div>
 
-      <!-- 과거 대화 스레드 -->
-      <div v-for="msg in panelData.messages" :key="msg.id" class="thread-item">
+      <!-- 과거 대화 스레드 (순수 USER / RESPONSE / ERROR 중심 표시) -->
+      <div v-for="msg in chatMessages" :key="msg.id" class="thread-item">
         <!-- 사용자 요청 -->
         <div v-if="msg.role === 'user'" class="user-turn">
           <div class="turn-head">
@@ -123,27 +123,8 @@
           </div>
         </div>
 
-        <!-- 에이전트 응답 및 도구 호출 -->
+        <!-- 에이전트 응답 -->
         <div v-else class="assistant-turn">
-          <!-- 도구 호출 접기/펼치기 블록 -->
-          <div v-if="msg.toolCalls && msg.toolCalls.length > 0" class="tool-group">
-            <button
-              type="button"
-              class="tool-summary-btn"
-              @click="toggleToolExpand(msg.id)"
-            >
-              <span class="tag-tool">[TOOL]</span>
-              <span>도구 호출 {{ msg.toolCalls.length }}건 ({{ summarizeToolsInline(msg.toolCalls) }})</span>
-              <span class="toggle-hint">{{ expandedToolIds.has(msg.id) ? '접기' : '펼치기' }}</span>
-            </button>
-            <ul v-if="expandedToolIds.has(msg.id)" class="tool-detail-list">
-              <li v-for="(tc, idx) in msg.toolCalls" :key="idx" class="tool-detail-row">
-                <span class="tool-name">{{ tc.name }}</span>
-                <span v-if="tc.target" class="tool-target">{{ tc.target }}</span>
-              </li>
-            </ul>
-          </div>
-
           <!-- 마크다운 본문 박스 -->
           <div v-if="msg.content" :class="['answer-box', { 'is-error': msg.isError }]">
             <div class="answer-meta">
@@ -304,14 +285,28 @@
       </div>
     </div>
 
-    <!-- [탭 2] Raw 스트림 & 요약 실행 로그 -->
+    <!-- [탭 2] 도구 호출 이력 · Raw 스트림 · 요약 실행 로그 -->
     <div
       v-show="activeTab === 'raw'"
       ref="rawScrollRef"
       class="terminal-scroll raw-console"
       :style="{ fontSize: `${Math.max(11, chatFontSize - 1)}px` }"
     >
-      <div class="log-section-head">실시간 stream-json / stderr 출력 ({{ panelData.rawStreamLogs.length }})</div>
+      <div class="log-section-head">도구 호출 이력 ({{ totalToolCallCount }})</div>
+      <div v-if="toolHistoryEntries.length === 0" class="c-muted">
+        기록된 도구 호출 이력이 없습니다.
+      </div>
+      <div v-else class="tool-history-list">
+        <div v-for="entry in toolHistoryEntries" :key="entry.id" class="tool-history-step">
+          <div v-for="(tc, idx) in entry.toolCalls" :key="`${entry.id}-${idx}`" class="tool-detail-row">
+            <span v-if="entry.timestamp" class="c-muted">[{{ formatClock(entry.timestamp) }}]</span>
+            <span class="tool-name">{{ tc.name }}</span>
+            <span v-if="tc.target" class="tool-target">{{ tc.target }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="log-section-head summary-head">실시간 stream-json / stderr 출력 ({{ panelData.rawStreamLogs.length }})</div>
       <div v-if="panelData.rawStreamLogs.length === 0" class="c-muted">
         실시간 CLI 실행 시 수신되는 NDJSON 및 stderr 원문이 여기에 표시됩니다.
       </div>
@@ -396,8 +391,36 @@ function adjustFontSize(delta) {
 }
 
 const expandedUserIds = reactive(new Set());
-const expandedToolIds = reactive(new Set());
 const friendlyToggledErrorKeys = reactive(new Set());
+
+// 대화 탭에는 본문이 존재하는 USER / RESPONSE / ERROR 항목만 남겨 도구-전용 빈 스텝 여백을 방지함
+const chatMessages = computed(() => {
+  const list = Array.isArray(props.panelData && props.panelData.messages)
+    ? props.panelData.messages
+    : [];
+  return list.filter(msg => msg && (msg.role === 'user' || Boolean(msg.content)));
+});
+
+const toolHistoryEntries = computed(() => {
+  const list = Array.isArray(props.panelData && props.panelData.messages)
+    ? props.panelData.messages
+    : [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const msg = list[i];
+    if (!msg || !Array.isArray(msg.toolCalls) || msg.toolCalls.length === 0) continue;
+    out.push({
+      id: msg.id || `tool-${i}`,
+      timestamp: msg.timestamp || null,
+      toolCalls: msg.toolCalls
+    });
+  }
+  return out;
+});
+
+const totalToolCallCount = computed(() =>
+  toolHistoryEntries.value.reduce((acc, entry) => acc + entry.toolCalls.length, 0)
+);
 const rawVisibleInsideFriendlyKeys = reactive(new Set());
 const markdownCache = new Map();
 
@@ -517,15 +540,6 @@ function getUserDisplayText(msg) {
 function toggleUserExpand(id) {
   if (expandedUserIds.has(id)) expandedUserIds.delete(id);
   else expandedUserIds.add(id);
-}
-
-function toggleToolExpand(id) {
-  if (expandedToolIds.has(id)) expandedToolIds.delete(id);
-  else expandedToolIds.add(id);
-}
-
-function summarizeToolsInline(toolCalls) {
-  return toolCalls.slice(0, 3).map(t => t.name).join(', ') + (toolCalls.length > 3 ? ` 외 ${toolCalls.length - 3}건` : '');
 }
 
 function renderMarkdownCached(id, text) {
@@ -848,51 +862,21 @@ watch(
   word-break: break-word;
 }
 
-.tool-group {
+.tool-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   margin-bottom: 6px;
 }
 
-.tool-summary-btn {
-  width: 100%;
+.tool-history-step {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 9px;
-  background-color: $bg-input;
-  border: 1px solid $border-subtle;
-  border-radius: 4px;
-  color: $text-secondary;
-  font-family: $font-mono;
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-
-  &:hover {
-    background-color: $bg-elevated;
-  }
-}
-
-.tag-tool {
-  color: $term-yellow;
-  font-weight: 700;
-}
-
-.toggle-hint {
-  margin-left: auto;
-  color: $text-muted;
-}
-
-.tool-detail-list {
-  list-style: none;
-  margin-top: 4px;
-  padding: 6px 10px;
-  background-color: $bg-input;
-  border: 1px solid $border-subtle;
-  border-radius: 4px;
+  flex-direction: column;
 }
 
 .tool-detail-row {
   display: flex;
+  align-items: baseline;
   gap: 8px;
   font-size: 11px;
   padding: 2px 0;
@@ -901,6 +885,7 @@ watch(
 .tool-name {
   color: $term-blue;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .tool-target {
