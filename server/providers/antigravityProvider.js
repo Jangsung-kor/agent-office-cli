@@ -35,9 +35,8 @@ const CAPABILITIES = {
   builtInEffortRegex: '-(low|medium|high|xhigh|max)$',
   healthBasis: 'transcript.jsonl 파일 크기',
   modes: [
-    { id: 'plan', label: 'plan (읽기/계획)' },
-    { id: 'accept-edits', label: 'accept-edits (편집 허용)' },
-    { id: 'auto', label: 'auto (자동 실행)' }
+    { id: 'plan', label: '읽기' },
+    { id: 'accept-edits', label: '편집' }
   ],
   efforts: [
     { id: 'auto', label: 'auto (기본)' },

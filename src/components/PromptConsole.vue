@@ -39,7 +39,7 @@
       </div>
 
       <div class="option-item">
-        <span class="field-label">모드</span>
+        <span class="field-label">보안 등급</span>
         <select
           class="option-select"
           :value="selectedModeId"
@@ -287,6 +287,7 @@ function submitPrompt() {
     modelId: selectedModelId.value,
     effort: selectedModelHasBuiltInEffort.value ? 'auto' : selectedEffortId.value,
     mode: selectedModeId.value,
+    skipPermissions: true,
     prompt: clean,
     createNew: Boolean(prefs.createNewSession)
   });

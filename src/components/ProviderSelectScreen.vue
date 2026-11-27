@@ -80,7 +80,7 @@
               <dd class="mono">세션 {{ p.sessionCount }}건 · 모델 {{ p.modelCount }}종</dd>
             </div>
             <div class="spec-row">
-              <dt>지원 모드</dt>
+              <dt>지원 보안 등급</dt>
               <dd class="mono">{{ formatModes(p.modes) }}</dd>
             </div>
           </dl>
@@ -135,7 +135,7 @@ const FALLBACK_CARDS = [
     runningCount: 0,
     modelCount: 0,
     sampleModels: [],
-    modes: [{ id: 'plan' }, { id: 'accept-edits' }, { id: 'auto' }]
+    modes: [{ id: 'plan' }, { id: 'accept-edits' }]
   },
   {
     providerId: 'codex',

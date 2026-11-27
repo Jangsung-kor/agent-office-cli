@@ -117,6 +117,7 @@ function startAgyPromptJob({
   modelId,
   effort,
   mode,
+  skipPermissions = true,
   prompt,
   cwd,
   mappingFile,
@@ -136,6 +137,9 @@ function startAgyPromptJob({
   }
   if (convId) {
     args.push('--conversation', convId);
+  }
+  if (skipPermissions) {
+    args.push('--dangerously-skip-permissions');
   }
   args.push(`-p=${safePrompt}`);
 

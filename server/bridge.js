@@ -1409,7 +1409,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && urlPath === '/api/prompt') {
     try {
       const body = await readRequestBody(req);
-      const { agentId, convId, modelId, effort, mode, prompt, createNew } = body;
+      const { agentId, convId, modelId, effort, mode, skipPermissions, prompt, createNew } = body;
 
       if (!isValidAgentId(agentId)) {
         sendJson(res, 400, { ok: false, error: '유효하지 않은 agentId: ' + agentId });
@@ -1467,6 +1467,7 @@ const server = http.createServer(async (req, res) => {
         modelId: normalized.modelId,
         effort: normalized.effort,
         mode: normalized.mode,
+        skipPermissions: skipPermissions !== false,
         prompt: cleanPrompt,
         cwd: resolveAgentWorkspace(agentId),
         mappingFile,

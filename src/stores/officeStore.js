@@ -24,9 +24,8 @@ const DEFAULT_CAPABILITIES_MAP = {
     builtInEffortRegex: '-(low|medium|high|xhigh|max)$',
     healthBasis: 'transcript.jsonl 파일 크기',
     modes: [
-      { id: 'plan', label: 'plan (읽기/계획)' },
-      { id: 'accept-edits', label: 'accept-edits (편집 허용)' },
-      { id: 'auto', label: 'auto (자동 실행)' }
+      { id: 'plan', label: '읽기' },
+      { id: 'accept-edits', label: '편집' }
     ],
     efforts: [
       { id: 'auto', label: 'auto (기본)' },
@@ -123,6 +122,7 @@ function buildPrefsForProvider(providerId, capabilities) {
     modelId: readProviderPref(providerId, 'model', caps.defaultModelId),
     effort: readProviderPref(providerId, 'effort', caps.defaultEffort),
     mode: readProviderPref(providerId, 'mode', caps.defaultMode),
+    skipPermissions: true,
     createNewSession: false
   };
 }
